@@ -1,0 +1,45 @@
+metric	at_inclusion	post diet	1y follow-up
+median_BMI	37.06	31.61	31.42
+SD_BMI	3.02	2.89	4.50
+min_BMI	32.08	27.06	22.28
+max_BMI	41.98	38.72	39.52
+median_weight	112.10	97.10	96.00
+SD_weight	15.48	12.49	18.24
+min_weight	90.60	79.80	64.40
+max_weight	143.30	130.30	138.60
+median_age	48.24		
+SD_age	12.43		
+min_age	20.43		
+max_age	64.61		
+median_SULF2	0.90	0.66	0.68
+SD_SULF2	0.33	0.25	0.39
+min_SULF2	0.45	0.22	0.22
+max_SULF2	1.85	1.26	2.20
+median_wbtot_pfat	40.14	37.75	34.34
+SD_wbtot_pfat	6.40	7.05	7.61
+min_wbtot_pfat	28.04	24.62	18.10
+max_wbtot_pfat	51.43	49.02	50.11
+median_android_pfat	44.06	39.65	37.37
+SD_android_pfat	4.47	6.00	7.35
+min_android_pfat	31.62	27.00	16.57
+max_android_pfat	50.56	50.06	50.79
+median_p_cholesterol	4.90	3.90	4.50
+SD_p_cholesterol	1.24	0.91	1.15
+min_p_cholesterol	2.60	2.00	2.30
+max_p_cholesterol	8.10	5.70	8.70
+median_p_cholesterol_ldl	3.00	2.30	2.75
+SD_p_cholesterol_ldl	1.01	0.82	1.01
+min_p_cholesterol_ldl	1.10	0.60	0.90
+max_p_cholesterol_ldl	5.00	4.10	6.80
+median_p_alat	28.00	31.00	22.00
+SD_p_alat	19.68	32.99	9.91
+min_p_alat	15.00	12.00	14.00
+max_p_alat	106.00	197.00	65.00
+median_homa_ir	3.40	1.49	2.10
+SD_homa_ir	1.95	0.85	1.27
+min_homa_ir	1.19	0.32	0.68
+max_homa_ir	8.63	3.87	6.90
+median_ms_z	0.72	0.06	-0.06
+SD_ms_z	0.61	0.46	0.60
+min_ms_z	-0.81	-0.83	-1.77
+max_ms_z	2.11	1.07	0.95

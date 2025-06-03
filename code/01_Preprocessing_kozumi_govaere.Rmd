@@ -1,0 +1,275 @@
+---
+title: "SULF2 is a serological biomarker in MASLD"
+author: "Christian Sommerauer"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    highlight: tango
+subtitle: "Preprocessing and normalization of publicly available RNA-seq datasets
+  of patient with MASLD"
+---
+
+
+```{r setup, include=FALSE}
+# set path
+path <- strsplit(dirname(rstudioapi::getActiveDocumentContext()$path), '/')[[1]]
+path2 <- path[-c((length(path)-0):length(path))]
+path3 <- paste(path2, collapse = '/')
+knitr::opts_knit$set(root.dir = path3)
+knitr::opts_chunk$set(echo = T, message = F, warning = F, dev = 'png')
+```
+
+```{r}
+library(tidyverse)
+
+source('code/00_helper_functions_parsing_carlga.R')
+source('code/00_helper_functions.R')
+
+# Load important functions used here
+
+### z-score and modified group.transform function
+z_score <- function(x) {
+    row.mean <- apply(x, 1, mean)
+    row.sd <- apply(x, 1, sd)
+    res <- (x - row.mean) / row.sd
+}
+
+groupTransform_rename <- function(x, group.lbls, FUN) {
+  
+  group.lbls.uniq <- unique(group.lbls)
+  group.lbls.uniq <- split(group.lbls.uniq, 1:length(group.lbls.uniq))
+  
+  res <- lapply(group.lbls.uniq, function(lbl) FUN(x[, group.lbls==lbl]))
+  res <- dplyr::bind_cols(res)
+  res <- as.data.frame(res)
+  row.names(res) <- row.names(x)
+  colnames(res) <- colnames(x)
+  
+  return(res)
+}
+
+groupTransform <- function(x, group.lbls, FUN) {
+  
+  group.lbls.uniq <- unique(group.lbls)
+  group.lbls.uniq <- split(group.lbls.uniq, 1:length(group.lbls.uniq))
+  
+  res <- lapply(group.lbls.uniq, function(lbl) FUN(x[, group.lbls==lbl]))
+  res <- dplyr::bind_cols(res)
+  res <- as.data.frame(res)
+  row.names(res) <- row.names(x)
+  colnames(res) <- unlist(group.lbls.uniq)
+  
+  return(res)
+}
+
+# Load annotations
+## Retrieving an annotation for geneIDs
+all_symbols_GeneIDs <- read.delim("data/Annotations/230918_february_2023_GeneID_Symbol_Hsap.txt")
+
+```
+
+### Anstee 2020 (GSE135251)
+```{r}
+# Annotation
+GSE135251_meta <- parseGEOSeriesMatrix(file = 'data/GSE135251/Unprocessed/GSE135251_series_matrix.txt') %>% 
+  dplyr::rename('Sample.Name' = geo_accession) %>% 
+  dplyr::inner_join(read.csv('data/GSE135251/Unprocessed/SraRunTable.txt'), by = 'Sample.Name')
+
+unique(GSE135251_meta$Instrument)
+table(GSE135251_meta$gender)
+table(GSE135251_meta$disease)
+table(GSE135251_meta$STAGE)
+
+# Select relevant meta information from the meta data. Add classification of healthy and very early as well as early to moderate and severe.
+Anstee_GSE135251_meta <- GSE135251_meta %>% dplyr::select(Run, STAGE, Fibrosis_stage, nas_score) %>% mutate(Cohort = "Govaere") %>% 
+   mutate(AT_RISK = case_when(
+  nas_score > 5 | Fibrosis_stage > 2 ~ "early_to_moderate_severe",                    
+  nas_score > 3 & Fibrosis_stage > 1 ~ "early_to_moderate_severe",                    
+      TRUE ~ "healthy_very_early")) %>%                  
+  mutate(Fibrosis_stage = as.factor(Fibrosis_stage)) %>%                    
+  mutate(nas_score = as.factor(nas_score))
+
+table(Anstee_GSE135251_meta$AT_RISK)
+
+write.table(Anstee_GSE135251_meta, "data/GSE135251/Processed/Govaere_meta.txt", sep="\t", quote=F, row.names = F)
+
+# Read the count table
+Anstee_GSE135251_counts <- read.delim('data/GSE135251/Unprocessed/GSE135251_featurecounts.txt', header = F, skip = 1) %>% 
+  dplyr::select(-V2,-V3,-V4,-V5)
+
+# Remove the uncessesary string bits
+Anstee_GSE135251_counts[1,] <- gsub('hisat2_aligned/', '', Anstee_GSE135251_counts[1,])
+Anstee_GSE135251_counts[1,] <- gsub('.bam', '', Anstee_GSE135251_counts[1,])
+
+# set colnames from first row
+names(Anstee_GSE135251_counts) <- Anstee_GSE135251_counts[1,]
+Anstee_GSE135251_counts <- Anstee_GSE135251_counts[2:nrow(Anstee_GSE135251_counts),]
+
+# everything is in character, need to convert to dbl.
+Anstee_GSE135251_counts <- Anstee_GSE135251_counts %>% rownames_to_column('x') %>%
+  dplyr::select(-x) %>% 
+  tibble::column_to_rownames('Geneid') %>% 
+  mutate(across(where(is.character), as.numeric))
+
+# Add Lengths for TPM calculations.
+col_order_Anstee <- c("Length", Anstee_GSE135251_meta$Run)
+Anstee_GSE135251_counts <- Anstee_GSE135251_counts[,col_order_Anstee]
+Anstee_GSE135251_counts_merge_me <- Anstee_GSE135251_counts
+```
+
+# Anstee - TPM and z-score normalizations.
+```{r}
+# TPM-normalize the count table.
+Anstee_GSE135251_counts[2:ncol(Anstee_GSE135251_counts)] <- normalizeData(Anstee_GSE135251_counts[2:ncol(Anstee_GSE135251_counts)], len = Anstee_GSE135251_counts$Length, method = "TPM")
+
+Anstee_GSE135251_counts <- Anstee_GSE135251_counts %>%  dplyr::select(-Length) 
+
+# Filter for certain TPM and retrieve symbols instead of GeneIDs
+# TPM - Filtering, set a threshold of 3 TPM.
+tpm_threshold <- 3
+Anstee_GSE135251_counts.3tpm <- Anstee_GSE135251_counts %>% 
+  filter(rowMeans(.) >= tpm_threshold)
+
+head(colSums(Anstee_GSE135251_counts))
+
+# Calculte the Z-scores for each gene across all patients.
+library(matrixStats)
+Anstee_GSE135251_counts.zscore <- Anstee_GSE135251_counts.3tpm %>% mutate(mean_row = rowMeans(Anstee_GSE135251_counts.3tpm)) %>%
+  mutate(mean_sd = rowSds(as.matrix(Anstee_GSE135251_counts.3tpm))) %>%
+  mutate(across(1:ncol(Anstee_GSE135251_counts.3tpm), ~.- mean_row)) %>%
+  mutate(across(1:ncol(Anstee_GSE135251_counts.3tpm), ~./ mean_sd)) %>%
+  dplyr::select(-mean_row, -mean_sd)
+
+# These values are not used, but are useful to check means for genes across stages, NAS, or in the two patient groups.
+Anstee_grptransform_STAGE_mean <- groupTransform(Anstee_GSE135251_counts.3tpm, 
+                                             group.lbls = Anstee_GSE135251_meta$STAGE, 
+                                             FUN = function(x) apply(x, 1, mean))
+
+Anstee_grptransform_NAS_mean <- groupTransform(Anstee_GSE135251_counts.3tpm, 
+                                             group.lbls = Anstee_GSE135251_meta$nas_score, 
+                                             FUN = function(x) apply(x, 1, mean))
+
+Anstee_grptransform_RISK_mean <- groupTransform(Anstee_GSE135251_counts.3tpm, 
+                                             group.lbls = Anstee_GSE135251_meta$AT_RISK, 
+                                             FUN = function(x) apply(x, 1, mean))
+
+Anstee_GSE135251_counts.zscore_mean <- groupTransform(Anstee_GSE135251_counts.zscore, 
+                                             group.lbls = Anstee_GSE135251_meta$AT_RISK, 
+                                             FUN = function(x) apply(x, 1, mean))
+
+Anstee_grptransform_STAGE_mean2 <- Anstee_grptransform_STAGE_mean %>% 
+  tibble::rownames_to_column("GeneID") %>% 
+  inner_join(all_symbols_GeneIDs,., by="GeneID") %>% 
+  dplyr::select(GeneID, symbol, control, early, moderate)
+
+Anstee_grptransform_NAS_mean2 <- Anstee_grptransform_NAS_mean %>% 
+  tibble::rownames_to_column("GeneID") %>% 
+  inner_join(all_symbols_GeneIDs,., by="GeneID") %>% 
+  dplyr::select(GeneID, symbol,"0", "1", "2", "3", "4", "5", "6", "7", "8")
+
+Anstee_grptransform_RISK_mean2 <- Anstee_grptransform_RISK_mean %>% 
+  tibble::rownames_to_column("GeneID") %>% 
+  inner_join(all_symbols_GeneIDs,., by="GeneID") %>% 
+  dplyr::select(GeneID, symbol, healthy_very_early, early_to_moderate_severe)
+
+#View(Anstee_grptransform_RISK_mean2)
+
+# Save the tables for the modeling part.
+Govaere_export <- list(
+  Anstee_GSE135251_counts_raw = Anstee_GSE135251_counts_merge_me,
+  Anstee_GSE135251_counts.3tpm = Anstee_GSE135251_counts.3tpm,
+  Anstee_GSE135251_counts.zscore = Anstee_GSE135251_counts.zscore)
+
+saveRDS(Govaere_export, "data/GSE135251/Processed/Govaere_processed.rds")
+```
+
+### Kozumi et al. (GSE167523)
+```{r}
+GSE167523_meta <- parseGEOSeriesMatrix(file = 'data/GSE167523/Unprocessed/GSE167523_series_matrix.txt') %>% 
+  dplyr::rename('Sample.Name' = geo_accession) %>% 
+  dplyr::inner_join(read.csv('data/GSE167523/Unprocessed/SraRunTable.txt'), by = 'Sample.Name')
+
+unique(GSE167523_meta$Instrument)
+table(GSE167523_meta$gender)
+table(GSE167523_meta$disease_subtype)
+
+#Select relevant meta information. SRR13797141 was removed due to lack of known disease subtype.
+Kozumi_GSE167523_meta <- GSE167523_meta %>% dplyr::select(Run, disease_subtype) %>% mutate(Cohort = "Kozumi") %>% dplyr::filter(!Run == "SRR13797141") %>%  
+  mutate(AT_RISK = ifelse(disease_subtype %in% c("NAFL"), "healthy_very_early", "early_to_moderate_severe"))
+table(Kozumi_GSE167523_meta$disease_subtype)
+write.table(Kozumi_GSE167523_meta, "data/GSE167523/Processed/Kozumi_meta.txt", sep="\t", quote=F, row.names = F)
+
+#Count table
+Kozumi_GSE167523_counts <- read.delim('data/GSE167523/Unprocessed/GSE167523_featurecounts.txt', header = F, skip = 1) %>% 
+  dplyr::select(-V2,-V3,-V4,-V5) 
+
+#Remove the uncessesary string bits
+Kozumi_GSE167523_counts[1,] <- gsub('hisat2_aligned/', '', Kozumi_GSE167523_counts[1,])
+Kozumi_GSE167523_counts[1,] <- gsub('.bam', '', Kozumi_GSE167523_counts[1,])
+
+#set colnames from first row
+names(Kozumi_GSE167523_counts) <- Kozumi_GSE167523_counts[1,]
+Kozumi_GSE167523_counts <- Kozumi_GSE167523_counts[2:nrow(Kozumi_GSE167523_counts),]
+
+#everything is in character, need to convert to dbl. Have to remove prev
+Kozumi_GSE167523_counts <- Kozumi_GSE167523_counts %>% 
+  dplyr::select(-SRR13797141) %>% # Remove the patient without disease annotation
+  rownames_to_column('x') %>%
+  dplyr::select(-x) %>% 
+  tibble::column_to_rownames('Geneid') %>% 
+  mutate(across(where(is.character), as.numeric))
+
+col_order_Kozumi <- c("Length", Kozumi_GSE167523_meta$Run)
+Kozumi_GSE167523_counts <- Kozumi_GSE167523_counts[,col_order_Kozumi]
+Kozumi_GSE167523_counts_merge_me <- Kozumi_GSE167523_counts
+```
+# Kozumi, TPM and z-score normalization
+```{r}
+# TPM-normalize the count table.
+Kozumi_GSE167523_counts[2:ncol(Kozumi_GSE167523_counts)] <- normalizeData(Kozumi_GSE167523_counts[2:ncol(Kozumi_GSE167523_counts)], len = Kozumi_GSE167523_counts$Length, method = "TPM") 
+
+Kozumi_GSE167523_counts <-  Kozumi_GSE167523_counts %>%  dplyr::select(-Length) 
+
+# Filter for certain TPM and retrieve symbols instead of GeneIDs
+# TPM - Filtering
+tpm_threshold <- 3
+Kozumi_GSE167523_counts.3tpm <- Kozumi_GSE167523_counts %>% 
+  filter(rowMeans(.) >= tpm_threshold)
+
+head(colSums(Kozumi_GSE167523_counts))
+
+Kozumi_GSE167523_counts.zscore <- Kozumi_GSE167523_counts.3tpm %>% mutate(mean_row = rowMeans(Kozumi_GSE167523_counts.3tpm)) %>%
+  mutate(mean_sd = rowSds(as.matrix(Kozumi_GSE167523_counts.3tpm))) %>%
+  mutate(across(1:ncol(Kozumi_GSE167523_counts.3tpm), ~.- mean_row)) %>%
+  mutate(across(1:ncol(Kozumi_GSE167523_counts.3tpm), ~./ mean_sd)) %>%
+  dplyr::select(-mean_row, -mean_sd)
+
+Kozumi_grptransform_STAGE_mean <- groupTransform(Kozumi_GSE167523_counts.3tpm, 
+                                             group.lbls = Kozumi_GSE167523_meta$disease_subtype, 
+                                             FUN = function(x) apply(x, 1, mean))
+                                              
+
+Kozumi_grptransform_STAGE_mean <- Kozumi_grptransform_STAGE_mean %>% 
+  tibble::rownames_to_column("GeneID") %>% 
+  inner_join(all_symbols_GeneIDs,., by="GeneID") %>% 
+  dplyr::select(GeneID, symbol, "NAFL", "NASH")
+
+
+
+Kozumi_export <- list(
+  Kozumi_GSE167523_counts_raw = Kozumi_GSE167523_counts_merge_me,
+  Kozumi_GSE167523_counts.3tpm = Kozumi_GSE167523_counts.3tpm,
+  Kozumi_GSE167523_counts.zscore = Kozumi_GSE167523_counts.zscore)
+
+saveRDS(Kozumi_export, "data/GSE167523/Processed/Kozumi_processed.rds")
+```
+
+
+
+```{r}
+sessionInfo()
+```
+
+

@@ -1,0 +1,536 @@
+
+---
+title: "SULF2 as biomarker in MASLD"
+author: "Christian Sommerauer"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    highlight: tango
+subtitle: FLIS2 serum analysis
+---
+
+
+```{r setup, include=FALSE}
+# set path
+path <- strsplit(dirname(rstudioapi::getActiveDocumentContext()$path), '/')[[1]]
+path <- path[-c((length(path)-1):length(path))]
+path <- paste(path, collapse = '/')
+knitr::opts_knit$set(root.dir = path)
+knitr::opts_chunk$set(echo = T, message = F, warning = F, dev = 'png')
+```
+# Load the packages
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(viridis)
+library(pROC)
+```
+# Load the data tables
+```{r}
+FLIS2 <- read.delim("/Volumes/kutterlab/Data/Christian_SULF2_secure/FLIS2/240708_FLIS2_full_table.txt") %>% 
+  mutate(BMI = vikt/(height/100*height/100)) %>% # Calculate the BMI from the data.
+  mutate(FIB4 = (age * (ASAT_ukat_per_l*60)) / (Thrombocytes * sqrt((ALAT_ukat_per_l*60)))) %>% # microkatal to U -> *60
+  mutate(average_conc = (SULF2_rep1 + SULF2_rep2)/2, .before=age) %>% 
+  mutate(average_SULF2_ng_ml = average_conc/1000) %>% # for visibility, have SULF2 concentration in ng/ml
+  mutate(stage_simple = ifelse(stage=="control", "CTRL", "MASLD")) # generates a new column to simplify the MASLD stages
+```
+
+# Box plots to assess MASLD vs control and across different stages.
+```{r}
+# Plot SULF2 against multiple MASLD stages, fill dots by BMI.
+ggplot(FLIS2, aes(y=average_SULF2_ng_ml, x=stage)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(shape=21, aes(fill=BMI), width=0.05, size=2) +
+  theme_bw()+
+  theme(axis.text = element_text(size=12),
+        axis.title = element_text(size=14)) +
+  scale_y_continuous(breaks = c(1, 1.5, 2.000, 2.500, 3.000), limits=c(0.600, 3.100)) +
+  ylab("SULF2 [ng/ml]") +
+  scale_fill_viridis() 
+ggsave("MASLD_biomarker_SULF2/results/per_individual_stage_SULF2_FLIS2.pdf", width=4, height=3)
+ aov <- aov(data=FLIS2, average_SULF2_ng_ml ~ stage)
+TukeyHSD(aov)
+
+# Plot SULF2 in control individuals and patients with MASLD (all stages collapsed)
+ggplot(FLIS2, aes(y=average_SULF2_ng_ml, x=stage_simple)) +
+  geom_boxplot(outlier.shape = NA) +
+  theme_bw() +
+  geom_jitter(shape=21, width=0.075, aes(fill=stage)) +
+  scale_y_continuous(breaks = c(1, 1.5, 2.000, 2.500, 3.000), limits=c(0.600, 3.000)) +
+  ylab("SULF2 [ng/ml]") +
+    scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) 
+ggsave("MASLD_biomarker_SULF2/results/per_binary_stage_SULF2_FLIS2.pdf", width=3.5, height=3)
+wilcox.test(data=FLIS2, average_SULF2_ng_ml ~ stage_simple)
+```
+
+# Test individual correlations of the FLIS2 patients with individual parameters.
+## CAP, corr. 0.35, p=0.03
+```{r}
+ggplot(data = FLIS2, aes(x = CAP_dB_per_m, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("CAP [dB/m]")
+ggsave("MASLD_biomarker_SULF2/results/SULF2_CAP_corrFLIS2.pdf", width=5, height=2.5)
+```
+
+## VCTE, corr. 0.32, p=0.04
+```{r}
+# THere is one extreme outlier in the VCTE measurement, which will be removed. 
+FLIS2_VCTE <- FLIS2 %>%  filter(!VCTE_kPa > 60)
+ggplot(data = FLIS2_VCTE, aes(x = VCTE_kPa, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("VCTE [kPa]")
+ggsave("MASLD_biomarker_SULF2/results/SULF2_VCTE_corrFLIS2.pdf", width=5, height=2.5)
+```
+
+## BMI, corr. 0.42, p=0.005
+```{r}
+ggplot(data = FLIS2, aes(x = BMI, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("BMI [kg/m2]")
+ggsave("MASLD_biomarker_SULF2/results/SULF2_BMI_corrFLIS2.pdf", width=5, height=2.5)
+```
+
+## ALT, , corr. 0.14, p=0.4 - one outlier, but no correlation
+```{r}
+ggplot(data = FLIS2, aes(x = ALAT_ukat_per_l, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("ALT ukat/l")
+ggsave("MASLD_biomarker_SULF2/results/SULF2_ALT_corrFLIS2.pdf", width=5, height=2.5)
+```
+## AST, corr. 0.23, p=0.01
+```{r}
+ggplot(data = FLIS2, aes(x = ASAT_ukat_per_l, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("AST ukat/l")
+ggsave("MASLD_biomarker_SULF2/results/SULF2_AST_corrFLIS2.pdf", width=5, height=2.5)
+```
+## PRO-C3, 0.29, p=0.06
+```{r}
+ggplot(data = FLIS2, aes(x = PROC3_ng_per_ml, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("PROC3 [ng/ml]")
+ggsave("MASLD_biomarker_SULF2/results/SULF2_PROC3_corrFLIS2.pdf", width=5, height=2.5)
+```
+
+## No correlation with thrombocytes or leukocytes or hemoglobin
+```{r}
+ggplot(data = FLIS2, aes(x = Thrombocytes, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("Thrombocytes")
+
+ggplot(data = FLIS2, aes(x = Leukocytes, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("Leukocytes")
+
+ggplot(data = FLIS2, aes(x = Hemoglobin_g_per_l, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+  ylab("SULF2 [ng/ml]") +
+  xlab("Hemoglobin_g/l")
+```
+# ROC curves for MASLD, T2D, and Fibrosis stages.
+## Plot the ROC curves together - MASLD and T2D
+```{r}
+# Select the necessary columns. Here: SULF2 concentration, simplified stages, and T2D
+roc_FLIS_table <- FLIS2 %>% dplyr::select(average_SULF2_ng_ml, stage_simple, T2D)
+table(roc_FLIS_table$T2D)
+
+# CTRL will be renamed to "0", otherwise "1"
+roc_FLIS_table$stage_simple <- ifelse(roc_FLIS_table$stage_simple == 'CTRL', 0, 1)
+
+# Calculate the ROC stats for MASLD and T2D using the pROC package.
+roc_curve_MASLD <- roc(roc_FLIS_table$stage_simple, roc_FLIS_table$average_SULF2_ng_ml)
+roc_curve_T2D <- roc(roc_FLIS_table$T2D, roc_FLIS_table$average_SULF2_ng_ml)
+
+# Make a new dataframe will all ROC statistics, which can then be plotted.
+roc_data <- data.frame(
+  fpr_MASLD = rev(1-roc_curve_MASLD$specificities),
+  tpr_MASLD = rev(roc_curve_MASLD$sensitivities),
+  thresholds_MASLD = rev(roc_curve_MASLD$thresholds),
+  fpr_T2D = rev(1-roc_curve_T2D$specificities),
+  tpr_T2D = rev(roc_curve_T2D$sensitivities),
+  thresholds_T2D= rev(roc_curve_T2D$thresholds))
+
+## I would choose a threshold of 1.11 ng/mL at a FPR of 42% and TPR of 97%
+
+
+# Plot the ROC curves (both in one plot)
+ggplot(roc_data) +
+  geom_line(aes(x = fpr_MASLD, y = tpr_MASLD), color = "black", size = 1) +
+  geom_line(aes(x = fpr_T2D, y = tpr_T2D), color = "brown", size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "navy") +
+  xlim(0, 1) + ylim(0, 1) +
+  labs(
+    title = paste0(sprintf("AUC MASLD = %.2f", auc(roc_curve_MASLD)),"\n", sprintf("AUC T2D = %.2f", auc(roc_curve_T2D))),
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) +
+  theme_classic()
+
+ggsave("MASLD_biomarker_SULF2/results/SULF2_FLIS2_ROC_MASLD_T2D.pdf", width=3.5, height=2.85)
+```
+# Plot the difference fibrosis comparisons together.
+#F0 vs 1/2/3/4; F0/1 vs 2/3/4; and F0-2 vs F3-4
+```{r}
+# Select the necessary columns. Here: SULF2 concentration, simplified stages, and three different columns for fibrosis comparisons.
+## The comparisons are F0 against F1-4; F0/1 against F2-4; F0-2 against F3/4.
+roc_FLIS_table_fibrosis <- FLIS2 %>% dplyr::select(average_SULF2_ng_ml, stage_simple, Fibrosis.stage=Fibrosis.stage, Fibrosis.stage_F0vsall=Fibrosis.stage, 
+                                                      Fibrosis.stage_F01vs234=Fibrosis.stage,
+                                                      Fibrosis.stage_F012vs34=Fibrosis.stage)
+
+
+# Rename the relevant fibrosis stages to "0" or "1" dependent what the ROC curves are comparing.
+roc_FLIS_table_fibrosis$Fibrosis.stage_F0vsall <- ifelse(roc_FLIS_table_fibrosis$stage_simple == 'CTRL', 0, 
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '0', 0, 
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '1', 1,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '2', 1,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '3', 1,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '4', 1, NA)))))) 
+
+roc_FLIS_table_fibrosis$Fibrosis.stage_F01vs234 <- ifelse(roc_FLIS_table_fibrosis$stage_simple == 'CTRL', 0, 
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '0', 0, 
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '1', 0,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '2', 1,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '3', 1,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '4', 1, NA)))))) 
+
+roc_FLIS_table_fibrosis$Fibrosis.stage_F012vs34 <- ifelse(roc_FLIS_table_fibrosis$stage_simple == 'CTRL', 0, 
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '0', 0, 
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '1', 0,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '2', 0,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '3', 1,
+                                        ifelse(roc_FLIS_table_fibrosis$Fibrosis.stage == '4', 1, NA)))))) 
+
+# Remove all NAs in the fibrosis columns; 31 columns remain.
+roc_FLIS_table_fibrosis <- roc_FLIS_table_fibrosis %>% filter(!is.na(Fibrosis.stage_F0vsall))
+
+roc_curve_F0vsall <- roc(roc_FLIS_table_fibrosis$Fibrosis.stage_F0vsall, roc_FLIS_table_fibrosis$average_SULF2_ng_ml)
+roc_curve_F01vs234 <- roc(roc_FLIS_table_fibrosis$Fibrosis.stage_F01vs234, roc_FLIS_table_fibrosis$average_SULF2_ng_ml)
+roc_curve_F012vs34 <- roc(roc_FLIS_table_fibrosis$Fibrosis.stage_F012vs34, roc_FLIS_table_fibrosis$average_SULF2_ng_ml)
+
+# Make a new dataframe will all ROC statistics, which can then be plotted.
+roc_data <- data.frame(
+  fpr_F0vsall = rev(1-roc_curve_F0vsall$specificities),
+  tpr_F0vsall = rev(roc_curve_F0vsall$sensitivities),
+  thresholds_F0vsall = rev(roc_curve_F0vsall$threshold),
+    fpr_F01vs234 = rev(1-roc_curve_F01vs234$specificities),
+    tpr_F01vs234 = rev(roc_curve_F01vs234$sensitivities),
+    thresholds_F01vs234 = rev(roc_curve_F01vs234$threshold),                        
+      fpr_F012vs34 = rev(1-roc_curve_F012vs34$specificities),
+      tpr_F012vs34 = rev(roc_curve_F012vs34$sensitivities),
+      thresholds_F012vs34 = rev(roc_curve_F012vs34$threshold))
+
+# Plot the ROC curves (three curves in one plot)
+ggplot(roc_data) +
+  geom_line(aes(x = fpr_F0vsall, y = tpr_F0vsall), color = "black", size = 1) +
+  geom_line(aes(x = fpr_F01vs234, y = tpr_F01vs234), color = "#7f5945", size = 1, linetype="dashed") +
+  geom_line(aes(x = fpr_F012vs34, y = tpr_F012vs34), color = "#c16e42", size = 1, linetype="dotted") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  xlim(0, 1) + ylim(0, 1) +
+  labs(
+    title =  paste0(sprintf("AUC F0 vs F1-4, full = %.2f", auc(roc_curve_F0vsall)),"\n", 
+                    sprintf("AUC F0/1 vs F2-4, dashed = %.2f", auc(roc_curve_F01vs234)), "\n",
+                    sprintf("AUC F0-2 vs F3/4, dotted = %.2f", auc(roc_curve_F012vs34))),
+    x = "False Positive Rate",
+    y = "True Positive Rate") +
+  theme_classic()
+
+ggsave("MASLD_biomarker_SULF2/results/SULF2_FLIS2_ROC_fibrosis_complete.pdf", width=3.5, height=3)
+```
+# Multi-correlation analysis
+```{r}
+# Load the libraries necessary for these analyses.
+library(corrplot)
+library(GGally)
+
+FLIS2$VCTE_kPa[FLIS2$VCTE_kPa > 50] = NA # remove the VCTE outlier again by setting the value NA (this patient is not removed for other correlations)
+FLIS2.corr <- FLIS2 
+df.flis2 <- data.frame(
+  Group = FLIS2.corr$stage,
+  SULF2 = FLIS2.corr$average_SULF2_ng_ml,
+  BMI = FLIS2.corr$BMI,
+  Weight = FLIS2.corr$vikt,
+  CAP = FLIS2.corr$CAP_dB_per_m,
+  VCTE = FLIS2.corr$VCTE_kPa,
+  AST = FLIS2.corr$ASAT_ukat_per_l,
+  ALT = FLIS2.corr$ALAT_ukat_per_l)
+
+# MULTI-CORRELATION PLOT
+## Set a function to add a correlation line in all scatter plots of the multi-corr plot.
+add_corr_line <- function(data, mapping, ...) {
+  p <- ggplot(data = data, mapping = mapping) + 
+    geom_point(alpha = 0.5, aes(color = Group), size=3) +
+    geom_smooth(method = "lm", color = "#252990", ...)
+  p
+}
+## Set a function to modify the upper half of the plot: write "r" instead of "Corr".
+custom_upper <- function(data, mapping, ...) {
+  x <- eval_data_col(data, mapping$x)
+  y <- eval_data_col(data, mapping$y)
+  corr_test <- cor.test(x, y)
+  corr <- corr_test$estimate
+  p_value <- corr_test$p.value
+  
+  # Determine significance stars
+  sig_stars <- if (p_value < 0.001) {
+    "***"
+  } else if (p_value < 0.01) {
+    "**"
+  } else if (p_value < 0.05) {
+    "*"
+  } else {
+    ""
+  }
+
+  
+label <- as.expression(bquote(italic(r) == .(round(corr, 2)) * .(sig_stars)))
+ 
+  ggally_text(label = label,  mapping = aes(x = 0.5, y = 0.5), size = 5, color = "black") +
+    theme_void()
+}
+
+## Generate the multi-correlation plot.
+flis2.p <- ggpairs(df.flis2, 
+                   lower = list(continuous = add_corr_line), 
+                    upper = list(continuous = custom_upper), ggplot2::aes(color=Group)) +
+  theme(
+   panel.grid.minor = element_blank(),
+    panel.grid.major= element_blank(),
+    panel.background = element_rect(fill = "#e5eff5"),
+    strip.background = element_rect(fill = "#43566f", color = "white"),
+    strip.text = element_text(color = "white", face = "bold") 
+  ) 
+
+## changing the color scale using a workaround from stackoverflow. There's no straight forward way implemented by the package. One has to loop over each small plot.
+for(i in 1:flis2.p$nrow) {
+  for(j in 1:flis2.p$ncol){
+    flis2.p[i,j] <- flis2.p[i,j] + 
+        scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+        scale_color_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) 
+  }
+}
+
+flis2.p
+
+ggsave("MASLD_biomarker_SULF2/results/cor_everything_FLIS2.pdf", width=12, height=10)
+```
+
+# Supplement. Plot SULF2 levels across genders
+```{r}
+ggplot(FLIS2, aes(y=average_SULF2_ng_ml, x=gender)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(aes(fill=gender), width=0.05, alpha=0.4, shape=21, size=2) +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_y_continuous(breaks = c(1.000, 1.500, 2.000, 2.500, 3.000), limits=c(0.600, 3.200)) +
+  scale_fill_manual(values=c("magenta", "darkblue")) +
+  ylab("SULF2 [ng/ml]")
+
+ggsave("MASLD_biomarker_SULF2/results/men_vs_women_SULF2_FLIS2.pdf", width=3.5, height=3)
+
+# Not significantly different between men and women
+wilcox.test(data=FLIS2, average_conc ~ gender)
+```
+# Supplement. Plot SULF2 across age
+```{r}
+ggplot(data = FLIS2, aes(x = age, y = average_SULF2_ng_ml)) + 
+  geom_point(aes(fill=stage), shape=21, color='black', size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_fill_manual(values=c("#FFC300", "#FF5733", "#C70039", "#581845")) +
+   ylab("SULF2 [ng/ml]") 
+ggsave("MASLD_biomarker_SULF2/results/241014_age_SULF2_FLIS2.pdf", width=5, height=3)
+```
+# Cohort characteristics for the table.
+```{r}
+FLIS2_BMI <- FLIS2 %>% filter(!is.na(BMI)) %>% group_by(stage) %>% 
+  mutate(median_BMI = median(BMI)) %>%
+  mutate(SD_BMI = sd(BMI)) %>%
+  mutate(min_BMI=min(BMI)) %>%
+  mutate(max_BMI=max(BMI)) %>%
+  dplyr::select(median_BMI, SD_BMI, min_BMI, max_BMI) %>%
+  unique()
+FLIS2_BMI
+
+FLIS2_age <- FLIS2 %>% group_by(stage) %>% 
+  mutate(median_Age = median(age)) %>%
+  mutate(SD_Age = sd(age)) %>%
+  mutate(min_Age=min(age)) %>%
+  mutate(max_Age=max(age)) %>%
+  dplyr::select(median_Age, SD_Age, min_Age, max_Age) %>%
+  unique()
+FLIS2_age
+
+FLIS2_T2D <- FLIS2 %>% group_by(stage) %>% dplyr::select(stage,T2D) %>% table()
+FLIS2_T2D <- FLIS2 %>% group_by(stage) %>% dplyr::select(stage,T2D) %>% table()
+
+FLIS2_weight <-  FLIS2 %>% filter(!is.na(vikt)) %>% group_by(stage) %>% 
+  mutate(median_weight = median(vikt)) %>%
+  mutate(SD_weight = sd(vikt)) %>%
+  mutate(min_weight=min(vikt)) %>%
+  mutate(max_weight=max(vikt)) %>%
+  dplyr::select(median_weight, SD_weight, min_weight, max_weight) %>%
+  unique()
+FLIS2_ALAT_ukat_per_l
+
+FLIS2_ALAT_ukat_per_l <-  FLIS2 %>% filter(!is.na(ALAT_ukat_per_l)) %>% group_by(stage) %>% 
+  mutate(median_ALAT_ukat_per_l = median(ALAT_ukat_per_l)) %>%
+  mutate(SD_ALAT_ukat_per_l = sd(ALAT_ukat_per_l)) %>%
+  mutate(min_ALAT_ukat_per_l=min(ALAT_ukat_per_l)) %>%
+  mutate(max_ALAT_ukat_per_l=max(ALAT_ukat_per_l)) %>%
+  dplyr::select(median_ALAT_ukat_per_l, SD_ALAT_ukat_per_l, min_ALAT_ukat_per_l, max_ALAT_ukat_per_l) %>%
+  unique()
+
+FLIS2_ASAT_ukat_per_l <-  FLIS2 %>% filter(!is.na(ASAT_ukat_per_l)) %>% group_by(stage) %>% 
+  mutate(median_ASAT_ukat_per_l = median(ASAT_ukat_per_l)) %>%
+  mutate(SD_ASAT_ukat_per_l = sd(ASAT_ukat_per_l)) %>%
+  mutate(min_ASAT_ukat_per_l=min(ASAT_ukat_per_l)) %>%
+  mutate(max_ASAT_ukat_per_l=max(ASAT_ukat_per_l)) %>%
+  dplyr::select(median_ASAT_ukat_per_l, SD_ASAT_ukat_per_l, min_ASAT_ukat_per_l, max_ASAT_ukat_per_l) %>%
+  unique()
+FLIS2_ASAT_ukat_per_l
+
+FLIS2_CAP_dB_per_m <-  FLIS2 %>% filter(!is.na(CAP_dB_per_m)) %>% group_by(stage) %>% 
+  mutate(median_CAP_dB_per_m = median(CAP_dB_per_m)) %>%
+  mutate(SD_CAP_dB_per_m = sd(CAP_dB_per_m)) %>%
+  mutate(min_CAP_dB_per_m=min(CAP_dB_per_m)) %>%
+  mutate(max_CAP_dB_per_m=max(CAP_dB_per_m)) %>%
+  dplyr::select(median_CAP_dB_per_m, SD_CAP_dB_per_m, min_CAP_dB_per_m, max_CAP_dB_per_m) %>%
+  unique()
+FLIS2_CAP_dB_per_m
+
+FLIS2_VCTE_kPa <-  FLIS2 %>% filter(!is.na(VCTE_kPa)) %>% filter(!VCTE_kPa > 70) %>% group_by(stage) %>% 
+  mutate(median_VCTE_kPa = median(VCTE_kPa)) %>%
+  mutate(SD_VCTE_kPa = sd(VCTE_kPa)) %>%
+  mutate(min_VCTE_kPa=min(VCTE_kPa)) %>%
+  mutate(max_VCTE_kPa=max(VCTE_kPa)) %>%
+  dplyr::select(median_VCTE_kPa, SD_VCTE_kPa, min_VCTE_kPa, max_VCTE_kPa) %>%
+  unique()
+FLIS2_VCTE_kPa
+
+FLIS2_SULF2 <-  FLIS2  %>% group_by(stage) %>% 
+  mutate(median_SULF2 = median(average_SULF2_ng_ml)) %>%
+  mutate(SD_SULF2 = sd(average_SULF2_ng_ml)) %>%
+  mutate(min_SULF2=min(average_SULF2_ng_ml)) %>%
+  mutate(max_SULF2=max(average_SULF2_ng_ml)) %>%
+  dplyr::select(median_SULF2, SD_SULF2, min_SULF2, max_SULF2) %>%
+  unique()
+FLIS2_SULF2
+
+
+#Average SULF2 levels
+avg_SULF2_ctrl <- FLIS2 %>% filter(stage_simple=="CTRL") %>%
+  dplyr::select(stage_simple, average_SULF2_ng_ml)
+avg_SULF2_MASLD <- FLIS2 %>% filter(stage_simple=="MASLD") %>%
+  dplyr::select(stage_simple, average_SULF2_ng_ml)
+
+"range ctrl"
+range(avg_SULF2_ctrl$average_SULF2_ng_ml)
+"range MASLD"
+range(avg_SULF2_MASLD$average_SULF2_ng_ml)
+"median ctrl"
+median(avg_SULF2_ctrl$average_SULF2_ng_ml)
+"median MASLD"
+median(avg_SULF2_MASLD$average_SULF2_ng_ml)
+median(avg_SULF2_MASLD$average_SULF2_ng_ml) / median(avg_SULF2_ctrl$average_SULF2_ng_ml)
+```
+# Safe the resulting table as a tsv.
+```{r}
+#  Create a function to transpose and remove the stage row
+clean_transpose <- function(df) {
+  df_t <- t(df)
+  # Check if first row is named "stage" and remove it
+  if (rownames(df_t)[1] == "stage") {
+    df_t <- df_t[-1, ]
+  }
+  return(df_t)
+}
+
+
+# Apply the function to each dataframe before combining
+combined_FLIS2_stats <- as.data.frame(rbind(
+  clean_transpose(FLIS2_age),
+  clean_transpose(FLIS2_BMI),
+  clean_transpose(FLIS2_weight),
+  clean_transpose(FLIS2_SULF2),
+  clean_transpose(FLIS2_CAP_dB_per_m),
+  clean_transpose(FLIS2_VCTE_kPa),
+  clean_transpose(FLIS2_ASAT_ukat_per_l),
+  clean_transpose(FLIS2_ALAT_ukat_per_l),
+  clean_transpose(FLIS2_T2D)
+))
+
+positions <- c(33,34)
+rownames(combined_FLIS2_stats)[positions] <- c("T2D_no", "T2D_yes")
+
+write.table(combined_FLIS2_stats, "MASLD_biomarker_SULF2/results/FLIS2_cohort_statistics.txt", sep="\t", quote=F)
+```
+

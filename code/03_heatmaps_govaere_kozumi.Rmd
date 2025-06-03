@@ -1,0 +1,110 @@
+---
+title: "SULF2 is a serological biomarker in MASLD"
+author: "Christian Sommerauer"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    highlight: tango
+subtitle: Plotting heatmaps of candidate genes in two patient cohorts
+---
+```{r setup, include=FALSE}
+# set path
+path <- strsplit(dirname(rstudioapi::getActiveDocumentContext()$path), '/')[[1]]
+path <- path[-c((length(path)-0):length(path))]
+path <- paste(path, collapse = '/')
+knitr::opts_knit$set(root.dir = path)
+knitr::opts_chunk$set(echo = T, message = F, warning = F, dev = 'png')
+```
+
+# Plot a heatmap for the expression of the candidate genes.
+```{r}
+library(ComplexHeatmap)
+library(tidyverse)
+
+# Load the previously saved R objects containing the complete gene lists, tpm-normalized, filtered by > 3 tpm.
+gene_ann <- read.delim("data/Annotations/230918_february_2023_GeneID_Symbol_Hsap.txt")
+hm_list <- list(
+                 govaere = list(
+                   counts = readRDS("data/GSE135251/Processed/Govaere_processed.rds")[[2]] %>% 
+                                  tibble::rownames_to_column("GeneID") %>% 
+                                  inner_join(gene_ann, .) %>% 
+                                  dplyr::select(-GeneID),
+                      meta = read.delim("data/GSE135251/Processed/Govaere_meta.txt") %>% 
+                        mutate(Fibrosis_stage = as.character(Fibrosis_stage)) %>% 
+                        mutate(nas_score = as.character(nas_score)) %>% 
+                        dplyr::select(-Cohort)),
+                kozumi  = list(
+                  counts = readRDS("data/GSE167523/Processed/Kozumi_processed.rds")[[2]] %>% 
+                                 tibble::rownames_to_column("GeneID") %>% 
+                                 inner_join(gene_ann, .) %>% 
+                                 dplyr::select(-GeneID),
+                      meta = read.delim("data/GSE167523/Processed/Kozumi_meta.txt") %>% 
+                      dplyr::select(-Cohort)))
+
+GOI.fullTable <- read.delim("results/secreted_overlapping_1e_neg10_03785_koz_gov.txt")
+GOI <- GOI.fullTable %>% dplyr::pull("symbol")
+
+# In a loop, filter the tpm-normalized count tables for the 11 candidate genes.
+hm_list_filt <- list()
+hm_metas <- list()
+for (i in 1:2) {
+hm_list_filt[[i]] <- hm_list[[i]]$counts %>% dplyr::filter(symbol %in% GOI) %>% tibble::column_to_rownames("symbol")
+hm_metas[[i]] <- hm_list[[i]]$meta %>% tibble::column_to_rownames("Run")
+}
+
+hm_df_counts <- cbind(hm_list_filt[[1]], hm_list_filt[[2]])
+```
+
+```{r}
+# Calculate Z-scores (row-wise)
+library(matrixStats)
+
+hm_list_filt_plot <- list()
+
+for (hm in 1:2) {
+hm_list_filt_plot[[hm]] <- hm_list_filt[[hm]] %>% 
+  mutate(mean_row = rowMeans(hm_list_filt[[hm]])) %>%
+  mutate(mean_sd = rowSds(as.matrix(hm_list_filt[[hm]]),useNames=FALSE)) %>%
+  mutate(across(1:ncol(hm_list_filt[[hm]]), ~.- mean_row)) %>%
+  mutate(across(1:ncol(hm_list_filt[[hm]]), ~./ mean_sd)) %>%
+  dplyr::select(-mean_row, -mean_sd) %>%
+  dplyr::arrange(rownames(.))
+}
+```
+
+```{r}
+# This generates figure 2A
+library(circlize)
+my_col <- circlize::colorRamp2(c(-4,-3, -1, -0.5, 0, 0.5, 1, 3, 4), c("darkblue", "#374fae", "#85c1e9","#e3eefb", "white", "#fee3dc", "#f5b7b1", "#934646", "darkred"))
+
+# Annotations for the Govaere dataset: Fibrosis, NAS, and the MASLD group. These are stored in the hm_metas list.
+anno_gov <- HeatmapAnnotation(fibrosis_score = as.matrix(hm_metas[[1]] %>% dplyr::select(Fibrosis_stage)),
+                               nas_score = as.matrix(hm_metas[[1]] %>% dplyr::select(nas_score)), 
+                               AT_RISK = as.matrix(hm_metas[[1]] %>% dplyr::select(AT_RISK)),
+                  col = list(
+                        #fibrosis_score = c("0"= "#fdfefe", "1"="#f9ebea","2"= "#e6b0aa","3"= "#c0392b","4"= "#7b241c"),
+                        fibrosis_score = c("0"= "#fbf0f8", "1"="#e3c0d8","2"= "#bd8eaf","3"= "#9a4982","4"= "#690e4e"),
+                        nas_score = c("0"="#FFFFFF", "1"= "#fdfefe","2"= "#e5e8e8","3" = "#bfc9ca", "4" = "#aab7b8","5" = "#5d6d7e","6" = "#34495e", "7"="#212f3c", "8"="black"),
+                        AT_RISK = c("early_to_moderate_severe"="#212f3c", "healthy_very_early"="#40E0D0")))
+
+hm_gov <- Heatmap(as.matrix(hm_list_filt_plot[[1]]), top_annotation=anno_gov, show_column_names = FALSE, col=my_col,
+                    heatmap_legend_param = list(title = "Z-score"))
+
+# Annotations for the Kozumi dataset: MASLD group. This are stored in the hm_metas list.
+anno_koz <- HeatmapAnnotation(AT_RISK = as.matrix(hm_metas[[2]] %>% dplyr::select(AT_RISK)),
+                  col = list(AT_RISK = c("early_to_moderate_severe"="#212f3c", "healthy_very_early"="#40E0D0")))
+
+hm_koz <- Heatmap(as.matrix(hm_list_filt_plot[[2]]), top_annotation=anno_koz, show_column_names = FALSE, col=my_col,
+                    heatmap_legend_param = list(title = "Z-score"))
+
+pdf("results/combined_hm_gov_koz.pdf", width = 10, height=3)
+draw(hm_gov + hm_koz)
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```
+

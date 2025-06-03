@@ -1,0 +1,947 @@
+```{r setup, include=FALSE}
+# set path
+path <- strsplit(dirname(rstudioapi::getActiveDocumentContext()$path), '/')[[1]]
+path <- path[-c((length(path)-1):length(path))]
+path <- paste(path, collapse = '/')
+knitr::opts_knit$set(root.dir = path)
+knitr::opts_chunk$set(echo = T, message = F, warning = F, dev = 'png')
+```
+
+# Adding the new ELISA data to the weight loss cohort.
+```{r}
+library(tidyverse)
+library(ggpubr)
+```
+
+# Load the WL table
+```{r}
+all_batches_norm <- read.delim("/Users/christiansom/Library/CloudStorage/OneDrive-KarolinskaInstitutet/DATA_PhD/SULF2_biomarker_study/SULF2_ELISA_weightLossCohort/250421_all_batches_WL_ELISA.normtov0.txt", sep="\t")
+```
+
+# Some info about the cohort, such as mean weight loss, and initial SULF2 loss.
+```{r}
+cohort_stats <- all_batches_norm %>% mutate(weight_loss = weight_v0 - weight_v1, .before=weight_v0)
+cohort_stats_df <- data.frame(weight_loss = cohort_stats$weight_loss, study_id = cohort_stats$study_id, WL_perc = cohort_stats$weight_loss_perc) %>% unique()
+mean(cohort_stats_df$weight_loss) # 15.4 kg weight loss in 8 weeks
+mean(cohort_stats_df$WL_perc) # corresponding to 13.4 % body weight change
+
+
+# Create a wider df that contains V0, V1, and V3 of SULF2 in separate columns
+SULF2_split_cols <- all_batches_norm %>%  
+  group_by(study_id, timepoint) %>%  
+  pivot_wider(names_from = timepoint, values_from = norm_by_v0_plate) %>%  tidyr::fill(V0, V1, V3, .direction = "downup") %>% 
+  select(V0, V1, V3) %>% 
+  mutate(SULF2_change_V1_V0 = V0-V1) %>% # difference before WL/after WL
+  mutate(SULF2_V0_div_V1 = V0/V1) %>% # ratio before WL/after WL
+  unique()
+
+# SULF2 is 28.5% percent lower after WL (mean)
+(mean(SULF2_split_cols$SULF2_change_V1_V0) / mean(SULF2_split_cols$V0)) *100
+
+# 46/51 patients have reduced SULF2 levels after weight loss.
+sum(SULF2_split_cols$SULF2_change_V1_V0 > 0)
+
+# The maximum fold change of before and after SULF2 is 3.37-fold
+max(SULF2_split_cols$SULF2_V0_div_V1)
+
+```
+
+# Plot the levels of SULF2 of after and before diet. (Fig 4A)
+```{r}
+# Statistics for the before and after comparison
+all_batches_norm # different timepoints are in the same column
+all_batches_norm_V1V0 <- all_batches_norm %>% filter(!timepoint=="V3") # this timepoint is not shown in this plot as the visibility becomes bad
+
+# calculate significance (t-test)
+t.test(all_batches_norm_V1V0$norm_by_v0_plate ~ all_batches_norm_V1V0$timepoint, paired = TRUE) 
+
+# Since the values are not normally distributed, we need a non-parametric test.
+wilcox.test(all_batches_norm_V1V0$norm_by_v0_plate ~ all_batches_norm_V1V0$timepoint, paired = TRUE, alternative = "two.sided") # p-value = 1.05e-08
+
+# mean line of all values for following plot.
+all_batches_norm_V1V0_overall_avg <- all_batches_norm_V1V0 %>% 
+  group_by(timepoint) %>% mutate(average_SULF2_per_timepoint = mean(norm_by_v0_plate)) %>% dplyr::select(timepoint, average_SULF2_per_timepoint) %>% unique() %>% ungroup() %>% mutate(study_id = 1)
+
+ggplot(all_batches_norm_V1V0, aes(x=timepoint, group=study_id)) + 
+  geom_line(data=all_batches_norm_V1V0, aes(y=norm_by_v0_plate, color=as.factor(gender)), alpha=0.3, linewidth=1) + # generates the individual lines for each patient
+  geom_point(data=all_batches_norm_V1V0, aes(y=norm_by_v0_plate), size=2, alpha=0.5, color="black") + # generates the individual points for each patient
+  geom_line(data=all_batches_norm_V1V0_overall_avg, color="black", aes(y=average_SULF2_per_timepoint), linewidth=1.5, linetype="dotted") + # thick average line
+  geom_point(data=all_batches_norm_V1V0_overall_avg, aes(y=average_SULF2_per_timepoint, group=timepoint), size=2, alpha=0.9, color="black") + # grouping average line to connect it
+  theme_bw() +
+  scale_color_manual(values=c("darkblue", "magenta")) +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_y_continuous(limits = c(0.200, 2.800), breaks = c(0.500, 1.000, 1.500, 2.000)) +
+  coord_cartesian(xlim = c(1.4,1.6)) + # reduce the white space at the sides 
+  labs(
+    x = "Before and after weight loss",
+    y = "norm. SULF2 conc."
+  )
+
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/Fig4A_line_plot_with_mean_line.pdf", width=4, height=4)
+```
+# Analysis of whether SULF2 gain or loss between the different time points are indicative of other metabolic measurements.
+```{r}
+# Modify the dataframe to have SULF2 values in different columns (wide format), like the other metadata. This makes it easier to calculate ratios between the different timepoints.
+all_batches_norm_wide <- all_batches_norm %>%  
+  group_by(study_id, timepoint) %>%  
+  pivot_wider(names_from = timepoint, values_from = norm_by_v0_plate) %>%  tidyr::fill(V0, V1, V3, .direction = "downup") %>% 
+  select(-rep1, -rep2, -average_conc, -batch, -mean_plate_v0) %>% 
+  unique()
+
+# Calculate SULF2 ratios between V1 and V0 as well as V3 and V1
+# Set the cut-offs. Change is considered 2% more or less than the previous timepoint (V1 vs V0 or V3 vs v1).
+upper_cutoff <- 1.02
+lower_cutoff <- 0.98
+all_batches_norm_success <-  all_batches_norm_wide %>% 
+  mutate(SULF2_V1_V0 = V1/V0) %>% 
+  mutate(SULF2_V3_V1 = V3/V1) %>% 
+  mutate(SULF2_V1_V0_word = ifelse(SULF2_V1_V0 < lower_cutoff, "SULF2_loss", ifelse(SULF2_V1_V0 > upper_cutoff, "SULF2_gain", "moderate_effect"))) %>% 
+  mutate(SULF2_V3_V1_word = ifelse(SULF2_V3_V1 > upper_cutoff, "SULF2_regain", ifelse(SULF2_V3_V1 < lower_cutoff, "SULF2_further_loss", "moderate_effect")))
+
+table(all_batches_norm_success$SULF2_V3_V1_word)
+
+# Perform this classification for all interesting metadata
+all_batches_norm_success_BMI <-  all_batches_norm_success %>% 
+  mutate(BMI_change_V1_V0 = bmi_v1/bmi_v0) %>% 
+  mutate(BMI_change_V3_V1 = bmi_v3/bmi_v1) %>% 
+  mutate(BMI_V1_V0_word = ifelse(BMI_change_V1_V0 < lower_cutoff, "BMI_loss", ifelse(BMI_change_V1_V0 > upper_cutoff, "BMI_gain", "moderate_effect"))) %>% 
+  mutate(BMI_V3_V1_word = ifelse(BMI_change_V3_V1 > upper_cutoff, "BMI_regain", ifelse(BMI_change_V3_V1 < lower_cutoff, "BMI_further_loss", "moderate_effect"))) %>% 
+   mutate(weight_change_V1_V0 = weight_v1/weight_v0) %>% 
+  mutate(weight_change_V3_V1 = weight_v3/weight_v1) %>% 
+  mutate(weight_change_V1_V0_word = ifelse(weight_change_V1_V0 < lower_cutoff, "weight_loss", ifelse(weight_change_V1_V0 > upper_cutoff, "weight_gain", "moderate_effect"))) %>% 
+  mutate(weight_change_V3_V1_word = ifelse(weight_change_V3_V1 > upper_cutoff, "weight_regain", ifelse(weight_change_V3_V1 < lower_cutoff, "weight_further_loss", "moderate_effect"))) %>% 
+      mutate(p_cholesterol_change_V1_V0 = p_cholesterol_v1/p_cholesterol_v0) %>% 
+  mutate(p_cholesterol_change_V3_V1 = p_cholesterol_v3/p_cholesterol_v1) %>% 
+  mutate(p_cholesterol_change_V1_V0_word = ifelse(p_cholesterol_change_V1_V0 < lower_cutoff, "chol_loss", ifelse(p_cholesterol_change_V1_V0 > upper_cutoff, "chol_gain", "moderate_effect"))) %>% 
+  mutate(p_cholesterol_change_V3_V1_word = ifelse(p_cholesterol_change_V3_V1 > upper_cutoff, "chol_regain", ifelse(p_cholesterol_change_V3_V1 < lower_cutoff, "chol_further_loss", "moderate_effect"))) %>% 
+      mutate(android_pfat_change_V1_V0 = android_pfat_v1/android_pfat_v0) %>% 
+  mutate(android_pfat_change_V3_V1 = android_pfat_v3/android_pfat_v1) %>% 
+  mutate(android_pfat_change_V1_V0_word = ifelse(android_pfat_change_V1_V0 < lower_cutoff, "androi_loss", ifelse(android_pfat_change_V1_V0 > upper_cutoff, "androi_gain", "moderate_effect"))) %>% 
+  mutate(android_pfat_change_V3_V1_word = ifelse(android_pfat_change_V3_V1 > upper_cutoff, "androi_regain", ifelse(android_pfat_change_V3_V1 < lower_cutoff, "androi_further_loss", "moderate_effect"))) %>%
+    mutate(wbtot_pfat_change_V1_V0 = wbtot_pfat_v1/wbtot_pfat_v0) %>% 
+  mutate(wbtot_pfat_change_V3_V1 = wbtot_pfat_v3/wbtot_pfat_v1) %>% 
+  mutate(wbtot_pfat_change_V1_V0_word = ifelse(wbtot_pfat_change_V1_V0 < lower_cutoff, "wbtot_loss", ifelse(wbtot_pfat_change_V1_V0 > upper_cutoff, "wbtot_gain", "moderate_effect"))) %>% 
+  mutate(wbtot_pfat_change_V3_V1_word = ifelse(wbtot_pfat_change_V3_V1 > upper_cutoff, "wbtot_regain", ifelse(wbtot_pfat_change_V3_V1 < lower_cutoff, "wbtot_further_loss", "moderate_effect"))) %>%
+      mutate(p_alat_change_V1_V0 = p_alat_v1/p_alat_v0) %>% 
+  mutate(p_alat_change_V3_V1 = p_alat_v3/p_alat_v1) %>% 
+  mutate(p_alat_change_V1_V0_word = ifelse(p_alat_change_V1_V0 < lower_cutoff, "p_alat_loss", ifelse(p_alat_change_V1_V0 > upper_cutoff, "p_alat_gain", "moderate_effect"))) %>% 
+  mutate(p_alat_change_V3_V1_word = ifelse(p_alat_change_V3_V1 > upper_cutoff, "p_alat_regain", ifelse(p_alat_change_V3_V1 < lower_cutoff, "p_alat_further_loss", "moderate_effect"))) %>% 
+      mutate(homa_ir_change_V1_V0 = homa_ir_v1/homa_ir_v0) %>% 
+  mutate(homa_ir_change_V3_V1 = homa_ir_v3/homa_ir_v1) %>% 
+  mutate(homa_ir_change_V1_V0_word = ifelse(homa_ir_change_V1_V0 < lower_cutoff, "homa_ir_loss", ifelse(homa_ir_change_V1_V0 > upper_cutoff, "homa_ir_gain", "moderate_effect"))) %>% 
+  mutate(homa_ir_change_V3_V1_word = ifelse(homa_ir_change_V3_V1 > upper_cutoff, "homa_ir_regain", ifelse(homa_ir_change_V3_V1 < lower_cutoff, "homa_ir_further_loss", "moderate_effect"))) %>% 
+  mutate(ms_z_change_V1_V0 = (ms_z_v1 - ms_z_v0)) %>% 
+  mutate(ms_z_change_V3_V1 = (ms_z_v3 - ms_z_v1)) %>% 
+  mutate(ms_z_change_V1_V0_word = ifelse(ms_z_v1 < ms_z_v0, "ms_z_loss", ifelse(ms_z_v1 > ms_z_v0, "ms_z_gain", "moderate_effect"))) %>% 
+  mutate(ms_z_change_V3_V1_word = ifelse(ms_z_v3 > ms_z_v1, "ms_z_regain", ifelse(ms_z_v3 < ms_z_v1, "ms_z_further_loss", "moderate_effect")))
+
+# This prints the total number of Moderate effect/ Regain / Further loss of the various parameters. Some of them are very unevenly distributed (ALT, android fat, HOMA-IR..)
+table(all_batches_norm_success_BMI$p_cholesterol_change_V3_V1_word)
+table(all_batches_norm_success_BMI$android_pfat_change_V3_V1_word)
+table(all_batches_norm_success_BMI$wbtot_pfat_change_V3_V1_word)
+table(all_batches_norm_success_BMI$p_alat_change_V3_V1_word)
+table(all_batches_norm_success_BMI$homa_ir_change_V3_V1_word)
+table(all_batches_norm_success_BMI$weight_change_V3_V1_word)
+
+all_batches_norm_success_SULF2_REGAIN <- all_batches_norm_success_BMI %>% 
+  filter(SULF2_V3_V1_word == "SULF2_regain")
+table(all_batches_norm_success_SULF2_REGAIN$BMI_V3_V1_word) # SULF2 trend is informative about BMI, since BMI is enriched in the SULF2 regain group.
+table(all_batches_norm_success_SULF2_REGAIN$weight_change_V3_V1_word) # SULF2 trend is informative about weight
+table(all_batches_norm_success_SULF2_REGAIN$p_cholesterol_change_V3_V1_word) # SULF2 trend is not informative about Cholesterol 
+table(all_batches_norm_success_SULF2_REGAIN$android_pfat_change_V3_V1_word) # SULF2 trend is not informative about android fat percentage 
+table(all_batches_norm_success_SULF2_REGAIN$wbtot_pfat_change_V3_V1_word)
+table(all_batches_norm_success_SULF2_REGAIN$p_alat_change_V3_V1_word) # SULF2 trend is not moderately informative about ALAT
+table(all_batches_norm_success_SULF2_REGAIN$homa_ir_change_V3_V1_word) # SULF2 trend is not moderately informative about HOMA_ir 
+table(all_batches_norm_success_SULF2_REGAIN$ms_z_change_V3_V1_word) # SULF2 trend is informative about metabolic Z score trend
+
+all_batches_norm_success_SULF2_FURTHER_LOSS <- all_batches_norm_success_BMI %>% 
+   filter(SULF2_V3_V1_word == "SULF2_further_loss")
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$BMI_V3_V1_word)
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$weight_change_V3_V1_word) # SULF2 trend is informative about weight
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$p_cholesterol_change_V3_V1_word)
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$android_pfat_change_V3_V1_word)
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$wbtot_pfat_change_V3_V1_word)
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$p_alat_change_V3_V1_word) 
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$homa_ir_change_V3_V1_word) 
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$ms_z_change_V3_V1_word)
+```
+
+# Check how many patients change according to the treatment groups. 
+```{r}
+# Fig S4A
+# Check how many patients per treatment group are in weight loss gain loss groups. For example, participants in group 1 (placebo) had mostly weight regain, while other groups have similar regain/weight loss. Group 4 had mostly weight loss, meaning exercise + GLP1RA was quite successful.
+
+weight_loss_V3_v1_treatments <-  all_batches_norm_success %>% 
+  mutate(weight_V3_V1 = weight_v3-weight_v1) %>%
+  mutate(weight_V3_V1_gainloss = ifelse(weight_V3_V1 > 0, "weight_regain", ifelse(weight_V3_V1 < 0, "weight_further_loss", "double_check")), .before=weight_loss_perc)
+
+# split according to weight trajectory
+weight_loss_V3_v1_gain <- weight_loss_V3_v1_treatments %>% filter(weight_V3_V1_gainloss == "weight_regain")
+weight_loss_V3_v1_loss <- weight_loss_V3_v1_treatments %>% filter(weight_V3_V1_gainloss == "weight_further_loss")
+
+WL_loss_group <- as.data.frame(table(weight_loss_V3_v1_loss$group)) %>% mutate(group = "loss")
+WL_gain_group <- as.data.frame(table(weight_loss_V3_v1_gain$group)) %>% mutate(group = "gain")
+WL_gain_loss_groups <- rbind(WL_loss_group, WL_gain_group)
+
+ggplot(WL_gain_loss_groups, aes(x=Var1, y=Freq, fill=group)) +
+  geom_col(position=position_dodge(), alpha=0.8, color="black") +
+  theme_bw() +
+  scale_fill_manual(values=c("black","grey")) +
+  scale_y_continuous(breaks=c(0,2,4,6,8)) +
+  xlab("treatment group") +
+  ylab("# patients")
+
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/distribution_treatment_groups_WLgainloss.pdf", width=5, height=4)
+# Fig S4B
+# Check how many patients per treatment group are in SULF2 gain loss groups. SULF2 loss or gain was not indicative of the treatment groups (or vice-versa), meaning SULF2 change was independent of the underlying mode of weight loss.
+loss_group <- as.data.frame(table(all_batches_norm_success_SULF2_FURTHER_LOSS$group)) %>% mutate(group = "loss")
+gain_group <- as.data.frame(table(all_batches_norm_success_SULF2_REGAIN$group)) %>% mutate(group = "gain")
+gain_loss_groups <- rbind(loss_group, gain_group)
+
+ggplot(gain_loss_groups, aes(x=Var1, y=Freq, fill=group)) +
+  geom_col(position=position_dodge(), alpha=0.8, color="black") +
+  theme_bw() +
+  scale_fill_manual(values=c("black","grey")) +
+  xlab("treatment group") +
+  ylab("# patients")
+
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/distribution_treatment_groups_SULF2gainloss.pdf", width=5, height=4)
+
+```
+# Fisher exact tests (or Chi square) to test significant proportions
+```{r}
+# FISHER EXACT TEST with the moderate category for weight, BMI, etc.
+
+# Fig 4D
+SULF2_vs_BMI_Fisher <- data.frame("BMI_REGAIN" = c(7, 15),
+                                  "BMI_LOSS" = c(16, 8),
+                                  "BMI_same" = c(3, 1), 
+                                  row.names = c("SULF2_FURTHER_LOSS", "SULF2_REGAIN"))
+fisher.test(SULF2_vs_BMI_Fisher) # Is significant for BMI and SULF2, 0.02535
+
+pdf("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/Fig4_Mosaic_BMI.pdf", width=4, height=4)
+mosaicplot(SULF2_vs_BMI_Fisher,
+  main = "Weight/BMI loss vs regain 1y follow-up stratified by SULF2 levels",
+  color = TRUE
+)
+dev.off()
+
+# Fig 4E
+SULF2_vs_MetS_Fisher <- data.frame("MetS_gain" = c(3, 11),
+                                  "MetS_loss" = c(23, 13),
+                                 row.names = c("SULF2_FURTHER_LOSS", "SULF2_REGAIN"))
+fisher.test(SULF2_vs_MetS_Fisher) # significant; 0.011
+
+pdf("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/Fig4_Mosaic_MetS.pdf", width=4, height=4)
+mosaicplot(SULF2_vs_MetS_Fisher,
+  main = "MetS loss vs regain 1y follow-up stratified by SULF2 levels",
+  color = TRUE
+)
+
+dev.off()
+
+# Fig 4F
+SULF2_vs_ALAT_Fisher <- data.frame("ALT_REGAIN" = c(5, 10),
+                                  "ALT_LOSS" = c(21, 13),
+                                  "ALT_same" = c(0, 1),
+                                  row.names = c("SULF2_FURTHER_LOSS", "SULF2_REGAIN"))
+fisher.test(SULF2_vs_ALAT_Fisher) # not significant; 0.08955
+
+pdf("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/Fig4_Mosaic_ALAT.pdf", width=4, height=4)
+mosaicplot(SULF2_vs_ALAT_Fisher,
+  main = "ALT loss vs regain 1y follow-up stratified by SULF2 levels",
+  color = TRUE
+)
+
+dev.off()
+```
+
+# Plot the SULF2 values according to whether they increase or decrease between before/afterdiet or after diet/1y followup (Fig 4B-C)
+```{r}
+SULF2_FURTHER_LOSS_study_ids <- all_batches_norm_success_SULF2_FURTHER_LOSS %>% dplyr::pull("study_id")
+SULF2_REGAIN_study_ids <- all_batches_norm_success_SULF2_REGAIN %>% dplyr::pull("study_id")
+
+# Average SULF2 loss: 22 % reduction
+mean(all_batches_norm_success_SULF2_FURTHER_LOSS$SULF2_V3_V1)
+
+# relatively even distribution across treatment groups (related to Fig S4AB)
+table(all_batches_norm_success_SULF2_FURTHER_LOSS$group)
+
+# Average SULF2 gain: 59 % Gain
+mean(all_batches_norm_success_SULF2_REGAIN$SULF2_V3_V1) 
+
+# relatively even distribution across treatment groups (related to Fig S4AB)
+table(all_batches_norm_success_SULF2_REGAIN$group)
+
+all_batches_norm_SULF2_regain_noV0 <- all_batches_norm %>% filter(study_id %in% SULF2_REGAIN_study_ids) %>% filter(!timepoint == "V0")
+all_batches_norm_further_LOSS_noV0 <- all_batches_norm %>% filter(study_id %in% SULF2_FURTHER_LOSS_study_ids) %>% filter(!timepoint == "V0")
+
+# These values are for plotting the average line
+all_batches_norm_SULF2_regain_noV0_avg <- all_batches_norm_SULF2_regain_noV0 %>% group_by(timepoint) %>%  mutate(average_SULF2_timepoint = mean(norm_by_v0_plate), .before=timepoint) %>% 
+  select(average_SULF2_timepoint, timepoint) %>% unique() %>% mutate(study_id = 1)
+all_batches_norm_further_LOSS_noV0_avg <- all_batches_norm_further_LOSS_noV0 %>% group_by(timepoint) %>%  mutate(average_SULF2_timepoint = mean(norm_by_v0_plate), .before=timepoint) %>% 
+  select(average_SULF2_timepoint, timepoint) %>% unique() %>% mutate(study_id = 1)
+
+# Figure 4B
+ggplot(all_batches_norm_further_LOSS_noV0, aes(x=timepoint, group=study_id)) + 
+  geom_line(aes(y=norm_by_v0_plate, color=as.factor(gender)), alpha=0.3, linewidth=1) + # generates the individual lines for each patient
+  geom_point(aes(y=norm_by_v0_plate), size=2, alpha=0.5, color="black") + # generates the individual points for each patient
+  geom_line(data=all_batches_norm_further_LOSS_noV0_avg, color="black", aes(y=average_SULF2_timepoint), linewidth=1.5, linetype="dotted") + # thick average line
+  geom_point(data=all_batches_norm_further_LOSS_noV0_avg, aes(y=average_SULF2_timepoint, group=timepoint), size=2, alpha=0.9, color="black") + # grouping average line to connect it
+  theme_bw() +
+   theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_color_manual(values=c("darkblue", "magenta")) +
+ scale_y_continuous(limits = c(0, 1.5), breaks = c(0, 0.500, 1.000, 1.500)) +
+  coord_cartesian(xlim = c(1.4,1.6)) + # reduce the white space at the sides 
+  labs(
+    x = "SULF2_further_Loss",
+    y = "norm.SULF2 conc."
+  )
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/SULF2_FURTHER_LOSS.pdf", width=4, height=4)
+wilcox.test(all_batches_norm_further_LOSS_noV0$norm_by_v0_plate ~ all_batches_norm_further_LOSS_noV0$timepoint, paired = TRUE, alternative = "two.sided") # p-value = 2.98e-08
+
+# Figure 4C
+ggplot(all_batches_norm_SULF2_regain_noV0, aes(x=timepoint, group=study_id)) + 
+  geom_line(aes(y=norm_by_v0_plate, color=as.factor(gender)), alpha=0.3, linewidth=1) + # generates the individual lines for each patient
+  geom_point(aes(y=norm_by_v0_plate), size=2, alpha=0.5, color="black") + # generates the individual points for each patient
+  geom_line(data=all_batches_norm_SULF2_regain_noV0_avg, color="black", aes(y=average_SULF2_timepoint), linewidth=1.5, linetype="dotted") + # thick average line
+  geom_point(data=all_batches_norm_SULF2_regain_noV0_avg, aes(y=average_SULF2_timepoint, group=timepoint), size=2, alpha=0.9, color="black") + # grouping average line to connect it
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_color_manual(values=c("darkblue", "magenta")) +
+ scale_y_continuous(limits = c(0, 2.6), breaks = c(0, 0.500, 1.000, 1.500, 2.00)) +
+  coord_cartesian(xlim = c(1.4,1.6)) + # reduce the white space at the sides 
+  labs(
+    x = "SULF2_regain",
+    y = "norm.SULF2 conc."
+  )
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/SULF2_REGAIN.pdf", width=4, height=4)
+
+wilcox.test(all_batches_norm_SULF2_regain_noV0$norm_by_v0_plate ~ all_batches_norm_SULF2_regain_noV0$timepoint, paired = TRUE, alternative = "two.sided") # p-value = 1.192e-07
+```
+
+# In addition to the two plots, can plot the different parameters in a heatmap.
+```{r}
+# Select the variables of interest
+all_batches_norm_success_SULF2_FURTHER_LOSS_hm <- all_batches_norm_success_SULF2_FURTHER_LOSS %>% ungroup() %>% select(SULF2_V3_V1, weight_change_V3_V1, p_cholesterol_change_V3_V1, android_pfat_change_V3_V1, p_alat_change_V3_V1, homa_ir_change_V3_V1) %>% arrange(desc(SULF2_V3_V1))
+
+# Separately select the MetSZ
+all_batches_norm_success_SULF2_FURTHER_LOSS_hm_msz <- all_batches_norm_success_SULF2_FURTHER_LOSS %>% ungroup() %>% select(ms_z_change_V3_V1_word)
+
+# Select the variables of interest
+all_batches_norm_success_SULF2_REGAIN_hm <- all_batches_norm_success_SULF2_REGAIN %>% ungroup() %>% select(SULF2_V3_V1, weight_change_V3_V1, p_cholesterol_change_V3_V1, android_pfat_change_V3_V1, p_alat_change_V3_V1, homa_ir_change_V3_V1) %>% arrange(desc(SULF2_V3_V1))
+
+# Separately select the MetSZ
+all_batches_norm_success_SULF2_REGAIN_hm_msz <- all_batches_norm_success_SULF2_REGAIN %>% ungroup() %>% select(ms_z_change_V3_V1_word)
+
+library(ComplexHeatmap)
+library(circlize)
+
+# Define a color function
+ col_fun <- colorRamp2(c(0, 0.98, 1, 1.02, 2), c("blue","#e6e3fe", "white","#fcd6d0", "red"))
+
+# Create the color mapping for the categorical annotation
+qual_col_fun <- c("ms_z_regain" = "red", "ms_z_further_loss" = "blue")
+
+# Create the annotation
+column_annotation_loss <- rowAnnotation(
+  ms_z_score = anno_simple(all_batches_norm_success_SULF2_FURTHER_LOSS_hm_msz, col = qual_col_fun)
+)
+
+column_annotation_regain <- rowAnnotation(
+  ms_z_score = anno_simple(all_batches_norm_success_SULF2_REGAIN_hm_msz, col = qual_col_fun)
+)
+
+
+Heatmap(all_batches_norm_success_SULF2_FURTHER_LOSS_hm,
+        name = "Values",
+        col = col_fun,
+        na_col = "grey",
+        cluster_rows = F,  # Cluster rows
+        cluster_columns = F,  # Cluster columns
+        show_row_names = TRUE,  # Show row names
+        show_column_names = TRUE,  # Show column names
+        column_title = "Conditions",  # Add title for columns
+        row_title = "Samples",# Add title for rows
+        right_annotation = column_annotation_loss 
+)
+
+Heatmap(all_batches_norm_success_SULF2_REGAIN_hm,
+        name = "Values",
+        col = col_fun,
+        na_col = "grey",
+        cluster_rows = F,  # Cluster rows
+        cluster_columns = F,  # Cluster columns
+        show_row_names = TRUE,  # Show row names
+        show_column_names = TRUE,  # Show column names
+        column_title = "Conditions",  # Add title for columns
+         row_title = "Samples",# Add title for rows
+        right_annotation = column_annotation_regain
+)
+```
+
+# Mean-normalize values for all parameters, and append them into a long format for the correlation plots.
+```{r}
+# Split the data frame into three dataframes, split per timepoint. Make a column per parameter.
+all_batches_norm_V0 <- all_batches_norm %>% filter(timepoint == "V0") %>% 
+  mutate(BMI = bmi_v0) %>% 
+  mutate(cholesterol = p_cholesterol_v0) %>% 
+  mutate(android_pfat = android_pfat_v0) %>% 
+  mutate(weight = weight_v0) %>% 
+  mutate(wbtot_pfat = wbtot_pfat_v0) %>%
+  mutate(ALT = p_alat_v0) %>%
+  mutate(homaIR = homa_ir_v0) %>%
+  mutate(metS = ms_z_v1)%>%
+  mutate(HDL = p_cholesterol_hdl_v0) %>%
+  mutate(LDL = p_cholesterol_ldl_v0) %>%
+  mutate(VLDL = p_cholesterol_vldl_v0) %>% 
+  mutate(albumin = p_albumin_v0)
+  
+all_batches_norm_V1 <- all_batches_norm %>% filter(timepoint == "V1") %>% 
+  mutate(BMI = bmi_v1) %>%  
+  mutate(cholesterol = p_cholesterol_v1) %>% 
+  mutate(android_pfat = android_pfat_v1) %>% 
+  mutate(weight = weight_v1) %>% 
+  mutate(wbtot_pfat = wbtot_pfat_v1) %>%
+  mutate(ALT = p_alat_v1) %>%
+  mutate(homaIR = homa_ir_v1) %>%
+  mutate(metS = ms_z_v1) %>%
+  mutate(HDL = p_cholesterol_hdl_v1) %>%
+  mutate(LDL = p_cholesterol_ldl_v1) %>%
+  mutate(VLDL = p_cholesterol_vldl_v1) %>% 
+  mutate(albumin = p_albumin_v1)
+
+all_batches_norm_V3 <- all_batches_norm %>% filter(timepoint == "V3") %>% 
+  mutate(BMI = bmi_v3) %>%  
+  mutate(cholesterol = p_cholesterol_v3) %>% 
+  mutate(android_pfat = android_pfat_v3) %>% 
+  mutate(weight = weight_v3) %>% 
+  mutate(wbtot_pfat = wbtot_pfat_v3) %>%
+  mutate(ALT = p_alat_v3) %>%
+  mutate(homaIR = homa_ir_v3) %>%
+  mutate(metS = ms_z_v3) %>%
+  mutate(HDL = p_cholesterol_hdl_v3) %>%
+  mutate(LDL = p_cholesterol_ldl_v3) %>%
+  mutate(VLDL = p_cholesterol_vldl_v3) %>% 
+  mutate(albumin = p_albumin_v3)
+
+# Then rowbind the three single dataframes together again, the values will be appended in single columns.
+all_batches_norm_corr <- rbind(all_batches_norm_V0, all_batches_norm_V1, all_batches_norm_V3)
+
+# Lastly, normalize all the variable values by their respective mean of all timepoints
+all_batches_norm_corr <- all_batches_norm_corr %>% 
+  mutate(BMI = BMI/mean(BMI)) %>%  
+  mutate(cholesterol = cholesterol/mean(cholesterol)) %>% 
+  mutate(android_pfat = android_pfat/mean(android_pfat, na.rm=TRUE)) %>% 
+  mutate(weight = weight/mean(weight)) %>% 
+  mutate(wbtot_pfat = wbtot_pfat/mean(wbtot_pfat, na.rm=TRUE)) %>%
+  mutate(ALT = ALT/mean(ALT)) %>%
+  mutate(homaIR = homaIR/mean(homaIR, na.rm=TRUE)) %>%
+  mutate(metS = ms_z_v3) %>%
+  mutate(HDL = HDL/mean(HDL, na.rm=TRUE)) %>%
+  mutate(LDL = LDL/mean(LDL, na.rm=TRUE)) %>%
+  mutate(VLDL = VLDL/mean(VLDL, na.rm=TRUE)) %>% 
+  mutate(albumin = albumin/mean(albumin, na.rm=TRUE))
+```
+
+# Plot the correlations with the respective variables.
+```{r}
+# Fig 5A
+ggplot(data = all_batches_norm_corr, aes(x = BMI, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. BMI")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_BMI.pdf", width=4.5, height=2.8)
+
+# Fig 5B
+ggplot(data = all_batches_norm_corr, aes(x = metS, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+ scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("MetS-Z")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_MetS_z.pdf", width=4.5, height=2.8)
+
+# Fig 5C
+ggplot(data = all_batches_norm_corr, aes(x = wbtot_pfat, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. whole body fat")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_wbtot.pdf", width=4.5, height=2.8)
+
+# Fig 5D
+ggplot(data = all_batches_norm_corr, aes(x = android_pfat, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. android fat")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_android.pdf", width=4.5, height=2.8)
+
+# Fig 5E
+ggplot(data = all_batches_norm_corr, aes(x = VLDL, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. VLDL")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_VLDL.pdf", width=4.5, height=2.8)
+
+# Fig 5F
+ggplot(data = all_batches_norm_corr, aes(x = cholesterol, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. total cholesterol")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_totChol.pdf", width=4.5, height=2.8)
+
+# Fig 5G
+ggplot(data = all_batches_norm_corr, aes(x = homaIR, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. HOMA-IR")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_HOMA_IR.pdf", width=4.5, height=2.8)
+
+# Fig 5H
+ggplot(data = all_batches_norm_corr, aes(x = ALT, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=timepoint), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#7e5109", "#f8c471", "#82e0aa")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("norm. ALT")
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WeightLoss_Corr_plots/Corr_ALT.pdf", width=4.5, height=2.8)
+```
+
+# Supplementary Figure 5B-C. SULF2 across genders and age
+```{r}
+ggplot(all_batches_norm, aes(y=norm_by_v0_plate, x=factor(gender, levels = c(2,1)))) +
+  geom_boxplot(outlier.shape = NA) +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  geom_jitter(aes(fill=as.factor(gender)), shape=21, width=0.05, alpha=0.4) +
+  facet_wrap(~timepoint) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  scale_y_continuous(breaks = c(0, 0.500, 1.000, 1.500, 2.000, 2.500), limits=c(0, 2.800)) +
+  ylab("norm. SULF2 conc.")
+
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WL_men_vs_women_SULF2_FLIS2.pdf", width=7, height=3)
+
+# Not significantly different between men and women
+all_batches_norm_V0 <- all_batches_norm %>% filter(timepoint == "V0")
+all_batches_norm_V1 <- all_batches_norm %>% filter(timepoint == "V1")
+all_batches_norm_V3 <- all_batches_norm %>% filter(timepoint == "V3")
+
+wilcox.test(data=all_batches_norm_V0, average_conc ~ gender)
+wilcox.test(data=all_batches_norm_V1, average_conc ~ gender)
+wilcox.test(data=all_batches_norm_V3, average_conc ~ gender)
+
+ggplot(data = all_batches_norm, aes(x = age_inclusion, y = norm_by_v0_plate)) + 
+  geom_point(shape=21, color='black', aes(fill=as.factor(gender)), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  facet_wrap(~timepoint) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("norm. SULF2 conc.") +
+  xlab("Age")
+
+ggsave("/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/WLcor_age_corr_plot.pdf", width=7, height=3)
+```
+
+# Table 2. Characteristics for table with patient characteristics for the Danish Weight loss cohort.
+```{r}
+#BMI
+all_batches_norm_V0_BMI <- all_batches_norm_V0 %>% filter(!is.na(bmi_v0)) %>%
+  mutate(median_BMI = median(bmi_v0)) %>%
+  mutate(SD_BMI = sd(bmi_v0)) %>%
+  mutate(min_BMI=min(bmi_v0)) %>%
+  mutate(max_BMI=max(bmi_v0)) %>%
+  dplyr::select(timepoint, median_BMI, SD_BMI, min_BMI, max_BMI) %>%
+  unique()
+all_batches_norm_V0_BMI
+
+all_batches_norm_V1_BMI <- all_batches_norm_V1 %>% filter(!is.na(bmi_v1)) %>% 
+  mutate(median_BMI = median(bmi_v1)) %>%
+  mutate(SD_BMI = sd(bmi_v1)) %>%
+  mutate(min_BMI=min(bmi_v1)) %>%
+  mutate(max_BMI=max(bmi_v1)) %>%
+  dplyr::select(timepoint, median_BMI, SD_BMI, min_BMI, max_BMI) %>%
+  unique()
+all_batches_norm_V1_BMI
+
+all_batches_norm_V3_BMI <- all_batches_norm_V3 %>% filter(!is.na(bmi_v3)) %>% 
+  mutate(median_BMI = median(bmi_v3)) %>%
+  mutate(SD_BMI = sd(bmi_v3)) %>%
+  mutate(min_BMI=min(bmi_v3)) %>%
+  mutate(max_BMI=max(bmi_v3)) %>%
+  dplyr::select(timepoint, median_BMI, SD_BMI, min_BMI, max_BMI) %>%
+  unique()
+all_batches_norm_V3_BMI
+
+BMI <- as.data.frame(t(rbind(all_batches_norm_V0_BMI, all_batches_norm_V1_BMI, all_batches_norm_V3_BMI)))
+names(BMI) <- c("at_inclusion", "post diet", "1y follow-up")
+BMI <- BMI[2:5,]
+
+#Age 
+all_batches_norm_V0_age <- all_batches_norm_V0 %>% filter(!is.na(age_inclusion)) %>%
+  mutate(median_age = median(age_inclusion)) %>%
+  mutate(SD_age = sd(age_inclusion)) %>%
+  mutate(min_age=min(age_inclusion)) %>%
+  mutate(max_age=max(age_inclusion)) %>%
+  dplyr::select(timepoint, median_age, SD_age, min_age, max_age) %>%
+  unique()
+all_batches_norm_V0_age
+
+age <- as.data.frame(t(rbind(all_batches_norm_V0_age, all_batches_norm_V0_age, all_batches_norm_V0_age)))
+names(age) <- c("at_inclusion", "post diet", "1y follow-up")
+age <- age[2:5,]
+
+#Weight
+all_batches_norm_V0_weight <- all_batches_norm_V0 %>% filter(!is.na(weight_v0)) %>%
+  mutate(median_weight = median(weight_v0)) %>%
+  mutate(SD_weight = sd(weight_v0)) %>%
+  mutate(min_weight=min(weight_v0)) %>%
+  mutate(max_weight=max(weight_v0)) %>%
+  dplyr::select(timepoint, median_weight, SD_weight, min_weight, max_weight) %>%
+  unique()
+all_batches_norm_V0_weight
+
+all_batches_norm_V1_weight <- all_batches_norm_V1 %>% filter(!is.na(weight_v1)) %>% 
+  mutate(median_weight = median(weight_v1)) %>%
+  mutate(SD_weight = sd(weight_v1)) %>%
+  mutate(min_weight=min(weight_v1)) %>%
+  mutate(max_weight=max(weight_v1)) %>%
+  dplyr::select(timepoint, median_weight, SD_weight, min_weight, max_weight) %>%
+  unique()
+all_batches_norm_V1_weight
+
+all_batches_norm_V3_weight <- all_batches_norm_V3 %>% filter(!is.na(weight_v3)) %>% 
+  mutate(median_weight = median(weight_v3)) %>%
+  mutate(SD_weight = sd(weight_v3)) %>%
+  mutate(min_weight=min(weight_v3)) %>%
+  mutate(max_weight=max(weight_v3)) %>%
+  dplyr::select(timepoint, median_weight, SD_weight, min_weight, max_weight) %>%
+  unique()
+all_batches_norm_V3_weight
+
+weight <- as.data.frame(t(rbind(all_batches_norm_V0_weight, all_batches_norm_V1_weight, all_batches_norm_V3_weight)))
+names(weight) <- c("at_inclusion", "post diet", "1y follow-up")
+weight <- weight[2:5,]
+
+#total fat percentage
+all_batches_norm_V0_wbtot_pfat <- all_batches_norm_V0 %>% filter(!is.na(wbtot_pfat_v0)) %>%
+  mutate(median_wbtot_pfat = median(wbtot_pfat_v0)) %>%
+  mutate(SD_wbtot_pfat = sd(wbtot_pfat_v0)) %>%
+  mutate(min_wbtot_pfat=min(wbtot_pfat_v0)) %>%
+  mutate(max_wbtot_pfat=max(wbtot_pfat_v0)) %>%
+  dplyr::select(timepoint, median_wbtot_pfat, SD_wbtot_pfat, min_wbtot_pfat, max_wbtot_pfat) %>%
+  unique()
+all_batches_norm_V0_wbtot_pfat
+
+all_batches_norm_V1_wbtot_pfat <- all_batches_norm_V1 %>% filter(!is.na(wbtot_pfat_v1)) %>% 
+  mutate(median_wbtot_pfat = median(wbtot_pfat_v1)) %>%
+  mutate(SD_wbtot_pfat = sd(wbtot_pfat_v1)) %>%
+  mutate(min_wbtot_pfat=min(wbtot_pfat_v1)) %>%
+  mutate(max_wbtot_pfat=max(wbtot_pfat_v1)) %>%
+  dplyr::select(timepoint, median_wbtot_pfat, SD_wbtot_pfat, min_wbtot_pfat, max_wbtot_pfat) %>%
+  unique()
+all_batches_norm_V1_wbtot_pfat
+
+all_batches_norm_V3_wbtot_pfat <- all_batches_norm_V3 %>% filter(!is.na(wbtot_pfat_v3)) %>% 
+  mutate(median_wbtot_pfat = median(wbtot_pfat_v3)) %>%
+  mutate(SD_wbtot_pfat = sd(wbtot_pfat_v3)) %>%
+  mutate(min_wbtot_pfat=min(wbtot_pfat_v3)) %>%
+  mutate(max_wbtot_pfat=max(wbtot_pfat_v3)) %>%
+  dplyr::select(timepoint, median_wbtot_pfat, SD_wbtot_pfat, min_wbtot_pfat, max_wbtot_pfat) %>%
+  unique()
+all_batches_norm_V3_wbtot_pfat
+
+wbtot <- as.data.frame(t(rbind(all_batches_norm_V0_wbtot_pfat, all_batches_norm_V1_wbtot_pfat, all_batches_norm_V3_wbtot_pfat)))
+names(wbtot) <- c("at_inclusion", "post diet", "1y follow-up")
+wbtot <- wbtot[2:5,]
+
+#ALT
+all_batches_norm_V0_p_alat <- all_batches_norm_V0 %>% filter(!is.na(p_alat_v0)) %>%
+  mutate(median_p_alat = median(p_alat_v0)) %>%
+  mutate(SD_p_alat = sd(p_alat_v0)) %>%
+  mutate(min_p_alat=min(p_alat_v0)) %>%
+  mutate(max_p_alat=max(p_alat_v0)) %>%
+  dplyr::select(timepoint, median_p_alat, SD_p_alat, min_p_alat, max_p_alat) %>%
+  unique()
+all_batches_norm_V0_p_alat
+
+all_batches_norm_V1_p_alat <- all_batches_norm_V1 %>% filter(!is.na(p_alat_v1)) %>% 
+  mutate(median_p_alat = median(p_alat_v1)) %>%
+  mutate(SD_p_alat = sd(p_alat_v1)) %>%
+  mutate(min_p_alat=min(p_alat_v1)) %>%
+  mutate(max_p_alat=max(p_alat_v1)) %>%
+  dplyr::select(timepoint, median_p_alat, SD_p_alat, min_p_alat, max_p_alat) %>%
+  unique()
+all_batches_norm_V1_p_alat
+
+all_batches_norm_V3_p_alat <- all_batches_norm_V3 %>% filter(!is.na(p_alat_v3)) %>% 
+  mutate(median_p_alat = median(p_alat_v3)) %>%
+  mutate(SD_p_alat = sd(p_alat_v3)) %>%
+  mutate(min_p_alat=min(p_alat_v3)) %>%
+  mutate(max_p_alat=max(p_alat_v3)) %>%
+  dplyr::select(timepoint, median_p_alat, SD_p_alat, min_p_alat, max_p_alat) %>%
+  unique()
+all_batches_norm_V3_p_alat
+
+ALAT <- as.data.frame(t(rbind(all_batches_norm_V0_p_alat, all_batches_norm_V1_p_alat, all_batches_norm_V3_p_alat)))
+names(ALAT) <- c("at_inclusion", "post diet", "1y follow-up")
+ALAT <- ALAT[2:5,]
+
+#Serum cholesterol
+all_batches_norm_V0_p_cholesterol <- all_batches_norm_V0 %>% filter(!is.na(p_cholesterol_v0)) %>%
+  mutate(median_p_cholesterol = median(p_cholesterol_v0)) %>%
+  mutate(SD_p_cholesterol = sd(p_cholesterol_v0)) %>%
+  mutate(min_p_cholesterol=min(p_cholesterol_v0)) %>%
+  mutate(max_p_cholesterol=max(p_cholesterol_v0)) %>%
+  dplyr::select(timepoint, median_p_cholesterol, SD_p_cholesterol, min_p_cholesterol, max_p_cholesterol) %>%
+  unique()
+all_batches_norm_V0_p_cholesterol
+
+all_batches_norm_V1_p_cholesterol <- all_batches_norm_V1 %>% filter(!is.na(p_cholesterol_v1)) %>% 
+  mutate(median_p_cholesterol = median(p_cholesterol_v1)) %>%
+  mutate(SD_p_cholesterol = sd(p_cholesterol_v1)) %>%
+  mutate(min_p_cholesterol=min(p_cholesterol_v1)) %>%
+  mutate(max_p_cholesterol=max(p_cholesterol_v1)) %>%
+  dplyr::select(timepoint, median_p_cholesterol, SD_p_cholesterol, min_p_cholesterol, max_p_cholesterol) %>%
+  unique()
+all_batches_norm_V1_p_cholesterol
+
+all_batches_norm_V3_p_cholesterol <- all_batches_norm_V3 %>% filter(!is.na(p_cholesterol_v3)) %>% 
+  mutate(median_p_cholesterol = median(p_cholesterol_v3)) %>%
+  mutate(SD_p_cholesterol = sd(p_cholesterol_v3)) %>%
+  mutate(min_p_cholesterol=min(p_cholesterol_v3)) %>%
+  mutate(max_p_cholesterol=max(p_cholesterol_v3)) %>%
+  dplyr::select(timepoint, median_p_cholesterol, SD_p_cholesterol, min_p_cholesterol, max_p_cholesterol) %>%
+  unique()
+all_batches_norm_V3_p_cholesterol
+
+cholesterol <- as.data.frame(t(rbind(all_batches_norm_V0_p_cholesterol, all_batches_norm_V1_p_cholesterol, all_batches_norm_V3_p_cholesterol)))
+names(cholesterol) <- c("at_inclusion", "post diet", "1y follow-up")
+cholesterol <- cholesterol[2:5,]
+
+#Android fat percentage
+all_batches_norm_V0_android_pfat <- all_batches_norm_V0 %>% filter(!is.na(android_pfat_v0)) %>%
+  mutate(median_android_pfat = median(android_pfat_v0)) %>%
+  mutate(SD_android_pfat = sd(android_pfat_v0)) %>%
+  mutate(min_android_pfat=min(android_pfat_v0)) %>%
+  mutate(max_android_pfat=max(android_pfat_v0)) %>%
+  dplyr::select(timepoint, median_android_pfat, SD_android_pfat, min_android_pfat, max_android_pfat) %>%
+  unique()
+all_batches_norm_V0_android_pfat
+
+all_batches_norm_V1_android_pfat <- all_batches_norm_V1 %>% filter(!is.na(android_pfat_v1)) %>% 
+  mutate(median_android_pfat = median(android_pfat_v1)) %>%
+  mutate(SD_android_pfat = sd(android_pfat_v1)) %>%
+  mutate(min_android_pfat=min(android_pfat_v1)) %>%
+  mutate(max_android_pfat=max(android_pfat_v1)) %>%
+  dplyr::select(timepoint, median_android_pfat, SD_android_pfat, min_android_pfat, max_android_pfat) %>%
+  unique()
+all_batches_norm_V1_android_pfat
+
+all_batches_norm_V3_android_pfat <- all_batches_norm_V3 %>% filter(!is.na(android_pfat_v3)) %>% 
+  mutate(median_android_pfat = median(android_pfat_v3)) %>%
+  mutate(SD_android_pfat = sd(android_pfat_v3)) %>%
+  mutate(min_android_pfat=min(android_pfat_v3)) %>%
+  mutate(max_android_pfat=max(android_pfat_v3)) %>%
+  dplyr::select(timepoint, median_android_pfat, SD_android_pfat, min_android_pfat, max_android_pfat) %>%
+  unique()
+all_batches_norm_V3_android_pfat
+
+android <- as.data.frame(t(rbind(all_batches_norm_V0_android_pfat, all_batches_norm_V1_android_pfat, all_batches_norm_V3_android_pfat)))
+names(android) <- c("at_inclusion", "post diet", "1y follow-up")
+android <- android[2:5,]
+
+#LDL - two patients removed due to NA
+all_batches_norm_V0_p_cholesterol_ldl <- all_batches_norm_V0 %>% filter(!is.na(p_cholesterol_ldl_v0)) %>%
+  mutate(median_p_cholesterol_ldl = median(p_cholesterol_ldl_v0)) %>%
+  mutate(SD_p_cholesterol_ldl = sd(p_cholesterol_ldl_v0)) %>%
+  mutate(min_p_cholesterol_ldl=min(p_cholesterol_ldl_v0)) %>%
+  mutate(max_p_cholesterol_ldl=max(p_cholesterol_ldl_v0)) %>%
+  dplyr::select(timepoint, median_p_cholesterol_ldl, SD_p_cholesterol_ldl, min_p_cholesterol_ldl, max_p_cholesterol_ldl) %>%
+  unique()
+all_batches_norm_V0_p_cholesterol_ldl
+
+all_batches_norm_V1_p_cholesterol_ldl <- all_batches_norm_V1 %>% filter(!is.na(p_cholesterol_ldl_v1)) %>% 
+  mutate(median_p_cholesterol_ldl = median(p_cholesterol_ldl_v1)) %>%
+  mutate(SD_p_cholesterol_ldl = sd(p_cholesterol_ldl_v1)) %>%
+  mutate(min_p_cholesterol_ldl=min(p_cholesterol_ldl_v1)) %>%
+  mutate(max_p_cholesterol_ldl=max(p_cholesterol_ldl_v1)) %>%
+  dplyr::select(timepoint, median_p_cholesterol_ldl, SD_p_cholesterol_ldl, min_p_cholesterol_ldl, max_p_cholesterol_ldl) %>%
+  unique()
+all_batches_norm_V1_p_cholesterol_ldl
+
+all_batches_norm_V3_p_cholesterol_ldl <- all_batches_norm_V3 %>% filter(!is.na(p_cholesterol_ldl_v3)) %>% 
+  mutate(median_p_cholesterol_ldl = median(p_cholesterol_ldl_v3)) %>%
+  mutate(SD_p_cholesterol_ldl = sd(p_cholesterol_ldl_v3)) %>%
+  mutate(min_p_cholesterol_ldl=min(p_cholesterol_ldl_v3)) %>%
+  mutate(max_p_cholesterol_ldl=max(p_cholesterol_ldl_v3)) %>%
+  dplyr::select(timepoint, median_p_cholesterol_ldl, SD_p_cholesterol_ldl, min_p_cholesterol_ldl, max_p_cholesterol_ldl) %>%
+  unique()
+all_batches_norm_V3_p_cholesterol_ldl
+
+LDL <- as.data.frame(t(rbind(all_batches_norm_V0_p_cholesterol_ldl, all_batches_norm_V1_p_cholesterol_ldl, all_batches_norm_V3_p_cholesterol_ldl)))
+names(LDL) <- c("at_inclusion", "post diet", "1y follow-up")
+LDL <- LDL[2:5,]
+
+#HOMA-IR - removed several patients due to NA
+all_batches_norm_V0_homa_ir <- all_batches_norm_V0 %>% filter(!is.na(homa_ir_v0)) %>%
+  mutate(median_homa_ir = median(homa_ir_v0)) %>%
+  mutate(SD_homa_ir = sd(homa_ir_v0)) %>%
+  mutate(min_homa_ir=min(homa_ir_v0)) %>%
+  mutate(max_homa_ir=max(homa_ir_v0)) %>%
+  dplyr::select(timepoint, median_homa_ir, SD_homa_ir, min_homa_ir, max_homa_ir) %>%
+  unique()
+all_batches_norm_V0_homa_ir
+
+all_batches_norm_V1_homa_ir <- all_batches_norm_V1 %>% filter(!is.na(homa_ir_v1)) %>% 
+  mutate(median_homa_ir = median(homa_ir_v1)) %>%
+  mutate(SD_homa_ir = sd(homa_ir_v1)) %>%
+  mutate(min_homa_ir=min(homa_ir_v1)) %>%
+  mutate(max_homa_ir=max(homa_ir_v1)) %>%
+  dplyr::select(timepoint, median_homa_ir, SD_homa_ir, min_homa_ir, max_homa_ir) %>%
+  unique()
+all_batches_norm_V1_homa_ir
+
+all_batches_norm_V3_homa_ir <- all_batches_norm_V3 %>% filter(!is.na(homa_ir_v3)) %>% 
+  mutate(median_homa_ir = median(homa_ir_v3)) %>%
+  mutate(SD_homa_ir = sd(homa_ir_v3)) %>%
+  mutate(min_homa_ir=min(homa_ir_v3)) %>%
+  mutate(max_homa_ir=max(homa_ir_v3)) %>%
+  dplyr::select(timepoint, median_homa_ir, SD_homa_ir, min_homa_ir, max_homa_ir) %>%
+  unique()
+all_batches_norm_V3_homa_ir
+
+HOMAIR <- as.data.frame(t(rbind(all_batches_norm_V0_homa_ir, all_batches_norm_V1_homa_ir, all_batches_norm_V3_homa_ir)))
+names(HOMAIR) <- c("at_inclusion", "post diet", "1y follow-up")
+HOMAIR <- HOMAIR[2:5,]
+
+#MetS z-score
+all_batches_norm_V0_ms_z <- all_batches_norm_V0 %>% filter(!is.na(ms_z_v0)) %>%
+  mutate(median_ms_z = median(ms_z_v0)) %>%
+  mutate(SD_ms_z = sd(ms_z_v0)) %>%
+  mutate(min_ms_z=min(ms_z_v0)) %>%
+  mutate(max_ms_z=max(ms_z_v0)) %>%
+  dplyr::select(timepoint, median_ms_z, SD_ms_z, min_ms_z, max_ms_z) %>%
+  unique()
+all_batches_norm_V0_ms_z
+
+all_batches_norm_V1_ms_z <- all_batches_norm_V1 %>% filter(!is.na(ms_z_v1)) %>% 
+  mutate(median_ms_z = median(ms_z_v1)) %>%
+  mutate(SD_ms_z = sd(ms_z_v1)) %>%
+  mutate(min_ms_z=min(ms_z_v1)) %>%
+  mutate(max_ms_z=max(ms_z_v1)) %>%
+  dplyr::select(timepoint, median_ms_z, SD_ms_z, min_ms_z, max_ms_z) %>%
+  unique()
+all_batches_norm_V1_ms_z
+
+all_batches_norm_V3_ms_z <- all_batches_norm_V3 %>% filter(!is.na(ms_z_v3)) %>% 
+  mutate(median_ms_z = median(ms_z_v3)) %>%
+  mutate(SD_ms_z = sd(ms_z_v3)) %>%
+  mutate(min_ms_z=min(ms_z_v3)) %>%
+  mutate(max_ms_z=max(ms_z_v3)) %>%
+  dplyr::select(timepoint, median_ms_z, SD_ms_z, min_ms_z, max_ms_z) %>%
+  unique()
+all_batches_norm_V3_ms_z
+
+MetSZ <- as.data.frame(t(rbind(all_batches_norm_V0_ms_z, all_batches_norm_V1_ms_z, all_batches_norm_V3_ms_z)))
+names(MetSZ) <- c("at_inclusion", "post diet", "1y follow-up")
+MetSZ <- MetSZ[2:5,]
+
+# SULF2 levels for the three timepoints
+# V0
+range(all_batches_norm_V0$norm_by_v0_plate)
+median(all_batches_norm_V0$norm_by_v0_plate)
+# V1
+range(all_batches_norm_V1$norm_by_v0_plate)
+median(all_batches_norm_V1$norm_by_v0_plate)
+# V3
+range(all_batches_norm_V3$norm_by_v0_plate)
+median(all_batches_norm_V3$norm_by_v0_plate)
+
+all_batches_norm_V0_SULF2 <- all_batches_norm_V0 %>% filter(!is.na(norm_by_v0_plate)) %>%
+  mutate(median_SULF2 = median(norm_by_v0_plate)) %>%
+  mutate(SD_SULF2 = sd(norm_by_v0_plate)) %>%
+  mutate(min_SULF2=min(norm_by_v0_plate)) %>%
+  mutate(max_SULF2=max(norm_by_v0_plate)) %>%
+  dplyr::select(timepoint, median_SULF2, SD_SULF2, min_SULF2, max_SULF2) %>%
+  unique()
+all_batches_norm_V0_SULF2
+
+all_batches_norm_V1_SULF2 <- all_batches_norm_V1 %>% filter(!is.na(norm_by_v0_plate)) %>% 
+  mutate(median_SULF2 = median(norm_by_v0_plate)) %>%
+  mutate(SD_SULF2 = sd(norm_by_v0_plate)) %>%
+  mutate(min_SULF2=min(norm_by_v0_plate)) %>%
+  mutate(max_SULF2=max(norm_by_v0_plate)) %>%
+  dplyr::select(timepoint, median_SULF2, SD_SULF2, min_SULF2, max_SULF2) %>%
+  unique()
+all_batches_norm_V1_SULF2
+
+all_batches_norm_V3_SULF2 <- all_batches_norm_V3 %>% filter(!is.na(norm_by_v0_plate)) %>% 
+  mutate(median_SULF2 = median(norm_by_v0_plate)) %>%
+  mutate(SD_SULF2 = sd(norm_by_v0_plate)) %>%
+  mutate(min_SULF2=min(norm_by_v0_plate)) %>%
+  mutate(max_SULF2=max(norm_by_v0_plate)) %>%
+  dplyr::select(timepoint, median_SULF2, SD_SULF2, min_SULF2, max_SULF2) %>%
+  unique()
+all_batches_norm_V3_SULF2
+SULF2 <- as.data.frame(t(rbind(all_batches_norm_V0_SULF2, all_batches_norm_V1_SULF2, all_batches_norm_V3_SULF2)))
+names(SULF2) <- c("at_inclusion", "post diet", "1y follow-up")
+SULF2 <- SULF2[2:5,]
+```
+
+```{r}
+combined_WL_stats <- rbind(BMI, weight, age, SULF2, wbtot, android, cholesterol, LDL, ALAT, HOMAIR, MetSZ) %>% rownames_to_column("metric")
+
+write.table(combined_WL_stats, "/Users/christiansom/Documents/GitHub/MASLD_biomarker_SULF2/results/table2_weightLoss_trial_statistics.txt", quote = F, sep = "\t", row.names = FALSE)
+```
+

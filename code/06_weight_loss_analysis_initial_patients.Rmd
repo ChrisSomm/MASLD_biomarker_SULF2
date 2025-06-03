@@ -1,0 +1,510 @@
+
+---
+title: 'SULF2 as biomarker in MASLD'
+subtitle: 'Danish cohort serum analysis'
+author: 'Christian Sommerauer'
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+# set path
+path <- strsplit(dirname(rstudioapi::getActiveDocumentContext()$path), '/')[[1]]
+path <- path[-c((length(path)-1):length(path))]
+path <- paste(path, collapse = '/')
+knitr::opts_knit$set(root.dir = path)
+knitr::opts_chunk$set(echo = T, message = F, warning = F, dev = 'png')
+```
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(viridis)
+```
+
+#Loading the results and making a combined table. The meta data is stored on a access-restricted location
+```{r}
+batch1_elisa <- read.delim("/Volumes/Kutter/Christian/SULF2_safe_storage/R_import/weight_loss_ELISA1.txt")
+batch2_elisa <- read.delim("/Volumes/Kutter/Christian/SULF2_safe_storage/R_import/weight_loss_ELISA2.txt") %>% mutate(study_id = as.character(study_id)) %>% dplyr::select(-rep1, -rep2, -minus_blank_rep1, -minus_blank_rep2, -conc._rep1, -conc._rep2)
+
+meta_full <- read.delim("/Volumes/Kutter/Christian/SULF2_safe_storage/R_import/weight_loss_meta_file.txt") %>%
+  mutate(study_id = as.character(study_id)) %>% mutate(gender = as.factor(gender))
+
+combined_table_b1b2 <- rbind(batch1_elisa, batch2_elisa) %>% inner_join(., meta_full, by="study_id") %>% mutate(average_conc=average_conc/1000) %>% mutate(SD_conc=SD_conc/1000) %>% arrange(timepoint,study_id)
+
+combined_table_b1b2_overall_avg <- combined_table_b1b2 %>% 
+  group_by(timepoint) %>% mutate(average_SULF2_per_timepoint = mean(average_conc)) %>% dplyr::select(timepoint, average_SULF2_per_timepoint) %>% unique() %>% ungroup() %>% mutate(study_id = 1)
+```
+
+#Average SULF2 loss, with range.
+```{r}
+after_vs_before <- combined_table_b1b2 %>% reframe(V1vsV0 = average_conc[timepoint == "V1"] / average_conc[timepoint == "V0"]) %>%
+  mutate(reduction_perc = (1-V1vsV0)*100)
+
+paste('On average, SULF2 serum levels are', (1-round(mean(after_vs_before$V1vsV0),2)),'% lower after weight loss')
+paste('The range of SULF2 serum levels are after weight loss range between', round(range(after_vs_before$reduction_perc)[1],2),'%',
+      'and', round(range(after_vs_before$reduction_perc)[2],2),'%')
+
+#can also check the geometric mean
+paste('On average (geometric mean), SULF2 serum levels are', (1-round(exp(mean(log(after_vs_before$V1vsV0))),2))*100,'% lower after weight loss')
+```
+
+
+# Figure 4A. Generate a plot to show the SULF2 serum levels before and after weight loss in each patient.
+```{r}
+ggplot(combined_table_b1b2, aes(x=timepoint, group=study_id)) + 
+  geom_line(data=combined_table_b1b2, aes(y=average_conc, color=gender), alpha=0.3) + # generates the individual lines for each patient
+  geom_point(data=combined_table_b1b2, aes(y=average_conc), size=2, alpha=0.5, color="black") + # generates the individual points for each patient
+  geom_line(data=combined_table_b1b2_overall_avg, color="black", aes(y=average_SULF2_per_timepoint), linewidth=1.5) + # thick average line
+  geom_point(data=combined_table_b1b2_overall_avg, aes(y=average_SULF2_per_timepoint, group=timepoint), size=2, alpha=0.9, color="black") + # grouping average line to connect it
+  theme_bw() +
+  scale_color_manual(values=c("darkblue", "magenta")) +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_y_continuous(limits = c(0.300, 2.800), breaks = c(0.500, 1.000, 1.500, 2.000)) +
+  coord_cartesian(xlim = c(1.4,1.6)) + # reduce the white space at the sides 
+  labs(
+    x = "Before_ and after weight loss",
+    y = "SULF2 [ng/ml]"
+  )
+
+ggsave("MASLD_biomarker_SULF2/results/240617_line_plot_with_mean_line.pdf", width=5, height=3.5)
+```
+
+# To generate correlations, we need to append the V0 and V1 values in the same columns.
+## To do this, will generate new columns with the same names for V0 and V1, and row bind them
+```{r}
+combined_table_b1b2_V0 <- combined_table_b1b2 %>% filter(timepoint == "V0") %>% 
+  mutate(BMI = bmi_v0) %>% 
+  mutate(cholesterol = p_cholesterol_v0) %>% 
+  mutate(android_pfat = android_pfat_v0) %>% 
+  mutate(weight = weight_v0) %>% 
+  mutate(wbtot_pfat = wbtot_pfat_v0) %>%
+  mutate(ALT = p_alat_v0) %>%
+  mutate(homaIR = homa_ir_v0) %>%
+  mutate(metS = ms_z_v1)%>%
+  mutate(HDL = p_cholesterol_hdl_v0) %>%
+  mutate(LDL = p_cholesterol_ldl_v0) %>%
+  mutate(VLDL = p_cholesterol_vldl_v1) %>% 
+  mutate(albumin = p_albumin_v0)
+  
+combined_table_b1b2_V1 <- combined_table_b1b2 %>% filter(timepoint == "V1") %>% 
+  mutate(BMI = bmi_v1) %>%  
+  mutate(cholesterol = p_cholesterol_v1) %>% 
+  mutate(android_pfat = android_pfat_v1) %>% 
+  mutate(weight = weight_v1) %>% 
+  mutate(wbtot_pfat = wbtot_pfat_v1) %>%
+  mutate(ALT = p_alat_v1) %>%
+  mutate(homaIR = homa_ir_v1) %>%
+  mutate(metS = ms_z_v1) %>%
+  mutate(HDL = p_cholesterol_hdl_v1) %>%
+  mutate(LDL = p_cholesterol_ldl_v1) %>%
+  mutate(VLDL = p_cholesterol_vldl_v1) %>% 
+  mutate(albumin = p_albumin_v1)
+
+combined_table_b1b2_corr <- rbind(combined_table_b1b2_V0, combined_table_b1b2_V1)
+```
+
+# Statistics for the before and after comparison
+```{r}
+paired_t_test <- data.frame(study_id = combined_table_b1b2_V0$study_id,
+                            difference_V0_V1 = combined_table_b1b2_V0$average_conc - combined_table_b1b2_V1$average_conc,
+                            timepoint = as.factor(combined_table_b1b2_V0$timepoint)) %>% 
+  mutate(average_difference = mean(difference_V0_V1)) %>% 
+  mutate(SD_difference = sd(difference_V0_V1)) 
+
+shapiro.test(paired_t_test$difference_V0_V1) #--> not normally distributed
+
+# calculating the p.values on the differences of after-before or the individual values are both yielding the same results.
+t.test(combined_table_b1b2_corr$average_conc ~ combined_table_b1b2_corr$timepoint, paired = TRUE) # Using all values: p-value: 1.186e-08
+t.test(paired_t_test$difference_V0_V1) # Directly passing the differences of V0-V1 to the t.test function.  p-value: 1.186e-08
+
+# Since the values are not normally distributed, we however need a non-parametric test
+wilcox.test(combined_table_b1b2_corr$average_conc ~ combined_table_b1b2_corr$timepoint, paired = TRUE, alternative = "two.sided") # p-value = 4.075e-10
+```
+# Invididual correlations between SULF2 serum levels and other parameters.
+### Note: the before and after values of the same patients were treated as individual samples for the correlations.
+
+## Figure 4B. BMI
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = BMI, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("BMI")
+
+ggsave("MASLD_biomarker_SULF2/results/240112_WLcoh_corr_plot_BMI.pdf", width=5, height=3)
+```
+
+## Figure 4C. ALT
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = log2(ALT), y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("ALT (log2)")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcoh_ALT_corr_plot.pdf", width=5, height=3)
+```
+
+## Figure 4D. Android fat percentage
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = android_pfat, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("Android pfat")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcoh_android_pfat_corr_plot.pdf", width=5, height=3)
+```
+
+## Figure 4E. Cholesterol
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = cholesterol, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("Serum cholesterol")
+
+ggsave("MASLD_biomarker_SULF2/results/240112_WLcoh_corr_plot_cholesterol.pdf", width=5, height=3)
+```
+
+
+# Figure 4F. WB fat percentage
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = wbtot_pfat, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("wb tot")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcoh_wbtot_corr_plot.pdf", width=5, height=3)
+```
+
+## Figure 4G. HOMA-IR
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = homaIR, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("HOMA-IR")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcoh_HOMAIR_corr_plot.pdf", width=5, height=3)
+```
+
+## Figure 4H. LDL
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = LDL, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("LDL")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcoh_LDL_corr_plot.pdf", width=5, height=3)
+```
+
+## Figure 4I. MetS z-score
+```{r}
+ggplot(data = combined_table_b1b2_corr, aes(x = metS, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 [ng/ml]") +
+  xlab("MetS")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcoh_metS_corr_plot.pdf", width=5, height=3)
+```
+
+# Supplementary Figure 4A. Multi-correlation plot showing individual correlations and scatterplots between different parameters.
+```{r}
+# Load the libraries
+library(corrplot)
+library(GGally)
+
+
+df.slite <- data.frame(
+  SULF2 = combined_table_b1b2_corr$average_conc,
+  BMI = combined_table_b1b2_corr$BMI,
+  Weight = combined_table_b1b2_corr$weight,
+  WB.fat = combined_table_b1b2_corr$wbtot_pfat,
+  Andr.fat = combined_table_b1b2_corr$android_pfat,
+  HOMA.IR = combined_table_b1b2_corr$homaIR,
+  Cholesterol = combined_table_b1b2_corr$cholesterol,
+  metS = combined_table_b1b2_corr$metS,
+  ALT =log2(combined_table_b1b2_corr$ALT))
+  
+
+ #Define a custom function to add a correlation line
+add_corr_line <- function(data, mapping, ...){
+  p <- ggplot(data = data, mapping = mapping) + 
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "lm", color = "blue", ...)
+  p
+}
+
+custom_upper <- function(data, mapping, ...) {
+  x <- eval_data_col(data, mapping$x)
+  y <- eval_data_col(data, mapping$y)
+  corr_test <- cor.test(x, y)
+  corr <- corr_test$estimate
+  p_value <- corr_test$p.value
+  
+  # Determine significance stars
+  sig_stars <- if (p_value < 0.001) {
+    "***"
+  } else if (p_value < 0.01) {
+    "**"
+  } else if (p_value < 0.05) {
+    "*"
+  } else {
+    ""
+  }
+
+  
+label <- as.expression(bquote(italic(r) == .(round(corr, 2)) * .(sig_stars)))
+ 
+  ggally_text(label = label,  mapping = aes(x = 0.5, y = 0.5), size = 4, color = "black") +
+    theme_void()
+}
+
+slite.p <- ggpairs(df.slite, 
+                   lower = list(continuous = add_corr_line), 
+                    upper = list(continuous = custom_upper)) +# ggplot2::aes(color=Group)) +
+  theme(
+   panel.grid.minor = element_blank(),
+    panel.grid.major= element_blank(),
+    panel.background = element_rect(fill = "#e5eff5"),
+    strip.background = element_rect(fill = "#43566f", color = "white"),
+    strip.text = element_text(color = "white", face = "bold") 
+  ) 
+
+slite.p
+
+ggsave("MASLD_biomarker_SULF2/results/240702_cor_everything_WL.pdf", width=11, height=8)
+```
+# Supplementary Figure 4B-C. SULF2 across genders and age
+```{r}
+ggplot(combined_table_b1b2, aes(y=average_conc, x=factor(gender, levels = c(2,1)))) +
+  geom_boxplot(outlier.shape = NA) +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  geom_jitter(width=0.05, alpha=0.4) +
+  facet_wrap(~timepoint) +
+  scale_y_continuous(breaks = c(0, 0.500, 1.000, 1.500, 2.000, 2.500), limits=c(0, 2.800)) +
+  ylab("SULF2 [ng/ml]")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WL_men_vs_women_SULF2_FLIS2.pdf", width=6, height=3)
+
+# Not significantly different between men and women
+wilcox.test(data=combined_table_b1b2_V0, average_conc ~ gender)
+wilcox.test(data=combined_table_b1b2_V1, average_conc ~ gender)
+
+ggplot(data = combined_table_b1b2, aes(x = age_inclusion, y = average_conc)) + 
+  geom_point(shape=21, color='black', aes(fill=gender), size=3) +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("darkblue", "magenta")) +
+  facet_wrap(~timepoint) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+   ylab("SULF2 conc. in ng/ml") +
+  xlab("Age")
+
+ggsave("MASLD_biomarker_SULF2/results/240617_WLcor_age_corr_plot.pdf", width=7, height=3)
+```
+
+# Table 2. Characteristics for table with patient characteristics for the Danish Weight loss cohort.
+```{r}
+#BMI
+combined_table_b1b2_v0_BMI <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_BMI = mean(bmi_v0)) %>%
+  mutate(SD_BMI = sd(bmi_v0)) %>% 
+  mutate(min_BMI = min(bmi_v0)) %>%
+  mutate(max_BMI = max(bmi_v0)) %>%
+  dplyr::select(timepoint, mean_BMI, SD_BMI, min_BMI, max_BMI) %>% unique()
+#BMI
+combined_table_b1b2_v1_BMI <- combined_table_b1b2 %>% filter(timepoint =="V1") %>% 
+  mutate(mean_BMI = mean(bmi_v1)) %>%
+  mutate(SD_BMI = sd(bmi_v1)) %>% 
+  mutate(min_BMI = min(bmi_v1)) %>%
+  mutate(max_BMI = max(bmi_v1)) %>%
+  dplyr::select(timepoint, mean_BMI, SD_BMI, min_BMI, max_BMI) %>% unique()
+#Age 
+combined_table_b1b2_v0_age <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_age = mean(age_inclusion)) %>%
+  mutate(SD_age = sd(age_inclusion)) %>% 
+  mutate(min_age = min(age_inclusion)) %>%
+  mutate(max_age = max(age_inclusion)) %>%
+  dplyr::select(timepoint, mean_age, SD_age, min_age, max_age) %>% unique()
+#Weight
+combined_table_b1b2_v0_weight <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_weight = mean(weight_v0)) %>%
+  mutate(SD_weight = sd(weight_v0)) %>% 
+  mutate(min_weight = min(weight_v0)) %>%
+  mutate(max_weight = max(weight_v0)) %>%
+  dplyr::select(timepoint, mean_weight, SD_weight, min_weight, max_weight) %>% unique()
+#Weight
+combined_table_b1b2_v1_weight <- combined_table_b1b2 %>% filter(timepoint =="V1") %>% 
+  mutate(mean_weight = mean(weight_v1)) %>%
+  mutate(SD_weight = sd(weight_v1)) %>% 
+  mutate(min_weight = min(weight_v1)) %>%
+  mutate(max_weight = max(weight_v1)) %>%
+  dplyr::select(timepoint, mean_weight, SD_weight, min_weight, max_weight) %>% unique()
+#total fat percentage
+combined_table_b1b2_v0_totfat <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_totfat = mean(wbtot_pfat_v0)) %>%
+  mutate(SD_totfat= sd(wbtot_pfat_v0)) %>% 
+  mutate(min_totfat = min(wbtot_pfat_v0)) %>%
+  mutate(max_totfat = max(wbtot_pfat_v0)) %>%
+  dplyr::select(timepoint, mean_totfat, SD_totfat, min_totfat, max_totfat) %>% unique()
+#total fat percentage
+combined_table_b1b2_v1_totfat <- combined_table_b1b2 %>% filter(timepoint =="V1") %>% 
+  mutate(mean_totfat = mean(wbtot_pfat_v1)) %>%
+  mutate(SD_totfat= sd(wbtot_pfat_v1)) %>% 
+  mutate(min_totfat = min(wbtot_pfat_v1)) %>%
+  mutate(max_totfat = max(wbtot_pfat_v1)) %>%
+  dplyr::select(timepoint, mean_totfat, SD_totfat, min_totfat, max_totfat) %>% unique()
+#ALT
+combined_table_b1b2_v0_ALT <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_ALT = mean(p_alat_v0)) %>%
+  mutate(SD_ALT = sd(p_alat_v0)) %>% 
+  mutate(min_ALT = min(p_alat_v0)) %>%
+  mutate(max_ALT = max(p_alat_v0)) %>%
+  dplyr::select(timepoint, mean_ALT, SD_ALT, min_ALT, max_ALT) %>% unique()
+#ALT
+combined_table_b1b2_v1_ALT <- combined_table_b1b2 %>% filter(timepoint =="V1") %>% 
+  mutate(mean_ALT = mean(p_alat_v1)) %>%
+  mutate(SD_ALT = sd(p_alat_v1)) %>% 
+  mutate(min_ALT = min(p_alat_v1)) %>%
+  mutate(max_ALT = max(p_alat_v1)) %>%
+  dplyr::select(timepoint, mean_ALT, SD_ALT, min_ALT, max_ALT) %>% unique()
+#Serum cholesterol
+combined_table_b1b2_v0_cholesterol <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_chol = mean(p_cholesterol_v0)) %>%
+  mutate(SD_chol = sd(p_cholesterol_v0)) %>% 
+  mutate(min_chol = min(p_cholesterol_v0)) %>%
+  mutate(max_chol = max(p_cholesterol_v0)) %>%
+  dplyr::select(timepoint, mean_chol, SD_chol, min_chol, max_chol) %>% unique()
+#Serum cholesterol
+combined_table_b1b2_v1_cholesterol <- combined_table_b1b2 %>% filter(timepoint =="V1") %>% 
+  mutate(mean_chol = mean(p_cholesterol_v1)) %>%
+  mutate(SD_chol = sd(p_cholesterol_v1)) %>% 
+  mutate(min_chol = min(p_cholesterol_v1)) %>%
+  mutate(max_chol = max(p_cholesterol_v1)) %>%
+  dplyr::select(timepoint, mean_chol, SD_chol, min_chol, max_chol) %>% unique()
+#Android fat percentage
+combined_table_b1b2_v0_android <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% 
+  mutate(mean_androi = mean(android_pfat_v0)) %>%
+  mutate(SD_androi = sd(android_pfat_v0)) %>% 
+  mutate(min_androi = min(android_pfat_v0)) %>%
+  mutate(max_androi = max(android_pfat_v0)) %>%
+  dplyr::select(timepoint, mean_androi, SD_androi, min_androi, max_androi) %>% unique()
+#Android fat percentage
+combined_table_b1b2_v1_android <- combined_table_b1b2 %>% filter(timepoint =="V1") %>% 
+  mutate(mean_androi = mean(android_pfat_v1)) %>%
+  mutate(SD_androi = sd(android_pfat_v1)) %>% 
+  mutate(min_androi = min(android_pfat_v1)) %>%
+  mutate(max_androi = max(android_pfat_v1)) %>%
+  dplyr::select(timepoint, mean_androi, SD_androi, min_androi, max_androi) %>% unique()
+#LDL - two patients removed due to NA
+combined_table_b1b2_v0_LDL <- combined_table_b1b2 %>% filter(timepoint =="V0") %>% filter(!study_id=="127", !study_id=="172") %>%
+  mutate(mean_LDL = mean(p_cholesterol_ldl_v0)) %>%
+  mutate(SD_LDL = sd(p_cholesterol_ldl_v0)) %>% 
+  mutate(min_LDL = min(p_cholesterol_ldl_v0)) %>%
+  mutate(max_LDL = max(p_cholesterol_ldl_v0)) %>%
+  dplyr::select(timepoint, mean_LDL, SD_LDL, min_LDL, max_LDL) %>% unique()
+#LDL - two patients removed due to NA
+combined_table_b1b2_v1_LDL <- combined_table_b1b2  %>% filter(!study_id=="127", !study_id=="172") %>%
+  mutate(mean_LDL = mean(p_cholesterol_ldl_v1)) %>%
+  mutate(SD_LDL = sd(p_cholesterol_ldl_v1)) %>% 
+  mutate(min_LDL = min(p_cholesterol_ldl_v1)) %>%
+  mutate(max_LDL = max(p_cholesterol_ldl_v1)) %>%
+  dplyr::select(timepoint, mean_LDL, SD_LDL, min_LDL, max_LDL) %>% unique()
+#HOMA-IR - removed several patients due to NA
+combined_table_b1b2_v0_homa1 <- combined_table_b1b2 %>% filter(timepoint =="V0") 
+combined_table_b1b2_v0_homa1 <- combined_table_b1b2_v0_homa1[!is.na(combined_table_b1b2_v0_homa1$homa_ir_v0),]
+
+combined_table_b1b2_v0_homaIR <- combined_table_b1b2_v0_homa1 %>% 
+  mutate(mean_IR = mean(homa_ir_v0)) %>%
+  mutate(SD_IR = sd(homa_ir_v0)) %>% 
+  mutate(min_IR = min(homa_ir_v0)) %>%
+  mutate(max_IR = max(homa_ir_v0)) %>%
+  dplyr::select(timepoint, mean_IR, SD_IR, min_IR, max_IR) %>% unique()
+#HOMA-IR - removed several patients due to NA
+combined_table_b1b2_v1_homa1 <- combined_table_b1b2 %>% filter(timepoint =="V1") 
+combined_table_b1b2_v1_homa1 <- combined_table_b1b2_v1_homa1[!is.na(combined_table_b1b2_v1_homa1$homa_ir_v1),]
+
+combined_table_b1b2_v1_homaIR <- combined_table_b1b2_v1_homa1 %>%
+  mutate(mean_IR = mean(homa_ir_v1)) %>%
+  mutate(SD_IR = sd(homa_ir_v1)) %>% 
+  mutate(min_IR = min(homa_ir_v1)) %>%
+  mutate(max_IR = max(homa_ir_v1)) %>%
+  dplyr::select(timepoint, mean_IR, SD_IR, min_IR, max_IR) %>% unique()
+#MetS z-score
+combined_table_b1b2_v0_mets <- combined_table_b1b2 %>% filter(timepoint =="V0") %>%
+  mutate(mean_metS = mean(ms_z_v0)) %>%
+  mutate(SD_metS = sd(ms_z_v0)) %>% 
+  mutate(min_metS = min(ms_z_v0)) %>%
+  mutate(max_metS = max(ms_z_v0)) %>%
+  dplyr::select(timepoint, mean_metS, SD_metS, min_metS, max_metS) %>% unique()
+#MetS z-score
+combined_table_b1b2_v1_mets <- combined_table_b1b2 %>% filter(timepoint =="V1") %>%
+  mutate(mean_metS = mean(ms_z_v1)) %>%
+  mutate(SD_metS = sd(ms_z_v1)) %>% 
+  mutate(min_metS = min(ms_z_v1)) %>%
+  mutate(max_metS = max(ms_z_v1)) %>%
+  dplyr::select(timepoint, mean_metS, SD_metS, min_metS, max_metS) %>% unique()
+
+final_v0 <- cbind(combined_table_b1b2_v0_BMI, combined_table_b1b2_v0_ALT, combined_table_b1b2_v0_android, combined_table_b1b2_v0_cholesterol, combined_table_b1b2_v0_totfat, combined_table_b1b2_v0_weight, combined_table_b1b2_v0_homaIR, combined_table_b1b2_v0_LDL, combined_table_b1b2_v0_mets, combined_table_b1b2_v0_age)
+final_v0 <- final_v0[, !duplicated(colnames(final_v0))]
+
+final_v1 <- cbind(combined_table_b1b2_v1_BMI, combined_table_b1b2_v1_ALT, combined_table_b1b2_v1_android, combined_table_b1b2_v1_cholesterol, combined_table_b1b2_v1_totfat, combined_table_b1b2_v1_weight, combined_table_b1b2_v1_homaIR, combined_table_b1b2_v1_LDL, combined_table_b1b2_v1_mets, combined_table_b1b2_v0_age)
+final_v1 <- final_v1[, !duplicated(colnames(final_v1))] %>% unique()
+
+final_table <- rbind(final_v0, final_v1)
+final_table
+```

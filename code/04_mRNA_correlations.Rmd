@@ -1,0 +1,228 @@
+---
+title: "SULF2 is a serological biomarker in MASLD"
+author: "Christian Sommerauer"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    highlight: tango
+subtitle: mRNA correlations of secretet DEGs with fibrosis and NAS in the Govaere
+  et al cohort. identify SULF2 as best candidate
+---
+
+```{r setup, include=FALSE}
+# set path
+path <- strsplit(dirname(rstudioapi::getActiveDocumentContext()$path), '/')[[1]]
+path <- path[-c((length(path)-0):length(path))]
+path <- paste(path, collapse = '/')
+knitr::opts_knit$set(root.dir = path)
+knitr::opts_chunk$set(echo = T, message = F, warning = F, dev = 'png')
+```
+
+# Load annotations, the list of 11 candidate genes, and the tpm-normalized counts from the Govaere et al dataset.
+### This analysis cannot be done with the Kozumi dataset as the information about individuals are lacking.
+```{r}
+getwd()
+
+library(tidyverse)
+library(ggpubr)
+
+gene_ann <- read.delim("data/Annotations/230918_february_2023_GeneID_Symbol_Hsap.txt")
+GOI.fullTable <- read.delim("results/secreted_overlapping_1e_neg10_03785_koz_gov.txt")
+GOI <- GOI.fullTable %>% dplyr::pull("symbol")
+
+govaere = list(tpm_counts = readRDS("data/GSE135251/Processed/Govaere_processed.rds")[[2]] %>% 
+                                  tibble::rownames_to_column("GeneID") %>% 
+                                  inner_join(gene_ann, .) %>% 
+                                  dplyr::select(-GeneID),
+                      meta = read.delim("data/GSE135251/Processed/Govaere_meta.txt"))
+```
+
+# Plot all pearson correlations as individual plots 
+```{r}
+
+output_dir <- "results/mRNA_correlation_plots"
+dir.create(path = output_dir, showWarnings = FALSE, recursive = TRUE)
+
+output_dir <- "results/TPM_boxplots"
+dir.create(path = output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Make an empty list
+govaere_SULF2_correlation <- list()
+# Loop over each candidate gene (GOI)
+for (i in 1:length(GOI)) {
+gene <- GOI[i]
+
+# Arrange each dataframe (one per candidate gene) in the list in a way that all TPM values, as well as the other parameters like fibrosis, NAS, etc, are in separate columns.
+govaere_SULF2_correlation[[i]] <- govaere$tpm_counts[govaere$tpm_counts$symbol==gene,] %>% t() %>% as.data.frame() %>% 
+  tibble::rownames_to_column("Run") %>%
+  slice(2:217) %>% 
+  inner_join(., govaere$meta, by="Run") 
+
+colnames(govaere_SULF2_correlation[[i]]) <- c("Run", "TPM", "STAGE", "Fibrosis_stage", "nas_score", "Cohort", "AT_RISK")
+
+# TPM is as character, has to be changed to numeric.
+govaere_SULF2_correlation[[i]]$TPM <-  as.numeric(govaere_SULF2_correlation[[i]]$TPM) 
+
+#Correlations between NAS/Fibrosis stage and SULF2, pearson.Figure 2C-D
+
+ggplot(data = govaere_SULF2_correlation[[i]], aes(x = Fibrosis_stage, y = TPM)) +
+  geom_point(shape=21, color='black', aes(fill=AT_RISK), size=3) +
+  geom_smooth(method = "lm", color="#C70039") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#212f3c", "#40E0D0")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  ylab(paste(gene, "(TPM-norm. gene expression)")) +
+  xlab("Fibrosis stage")
+ggsave(paste0("results/mRNA_correlation_plots/Fibrosis_cor_Govaere_pearson_",gene, ".pdf"), width=7, height=4)
+
+ggplot(data = govaere_SULF2_correlation[[i]], aes(x = nas_score, y = TPM)) + 
+  geom_point(shape=21, color='black', aes(fill=AT_RISK), size=3) +
+  geom_smooth(method = "lm", color="#C70039") +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  scale_fill_manual(values=c("#212f3c", "#40E0D0")) +
+  stat_cor(method="pearson", p.digits=0, size=4, cor.coef.name = "r") +
+  scale_x_continuous(breaks = c(0,1,2,3,4,5,6,7,8), limits=c(0,8)) +
+  ylab(paste(gene, "(TPM-norm. gene expression)")) +
+  xlab("NAS score")
+ggsave(paste0("results/mRNA_correlation_plots/NAS_cor_Govaere_pearson_",gene, ".pdf"), width=7, height=4)
+
+# Supplementary Figure 2C-D (Only SULF2 is shown in the manuscript)
+# Expression boxplots
+## Fibrosis
+ggplot(data = govaere_SULF2_correlation[[i]], aes(x = as.factor(Fibrosis_stage), y = TPM)) + 
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  ylab(paste(gene, "(TPM-norm. gene expression)")) +
+  xlab("Fibrosis stage")
+ggsave(paste0("results/TPM_boxplots/TPM_fib_Govaere_",gene, ".pdf"), width=5, height=4)
+
+## NAS
+ggplot(data = govaere_SULF2_correlation[[i]], aes(x = as.factor(nas_score), y = TPM)) + 
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text = element_text(size=14),
+        axis.title = element_text(size=14)) +
+  ylab(paste(gene, "(TPM-norm. gene expression)")) +
+  xlab("NAS score")
+ggsave(paste0("results/TPM_boxplots/TPM_NAS_Govaere_",gene, ".pdf"), width=5, height=4)
+
+}
+```
+
+# This section creates a dataframe that contains all correlations to plot.
+```{r}
+# Create empty lists.
+govaere_gene_list <- list()
+govaere_SULF2_correlation_pearson_NAS <- list()
+govaere_SULF2_correlation_pearson_fib <- list()
+
+# Like in the section above, loop over the 11 candidate genes, arranging the dataframes columnwise
+for (i in 1:length(GOI)) {
+gene <- GOI[i]
+govaere_gene_list[[i]] <- govaere$tpm_counts[govaere$tpm_counts$symbol==gene,] %>% t() %>% as.data.frame() %>% 
+  tibble::rownames_to_column("Run") %>%
+  slice(2:217) %>% 
+  inner_join(., govaere$meta, by="Run") 
+
+colnames(govaere_gene_list[[i]]) <- c("Run", "TPM", "STAGE", "Fibrosis_stage", "nas_score", "Cohort", "AT_RISK")
+
+# Change TPM from character to numeric
+govaere_gene_list[[i]]$TPM <- as.numeric(govaere_gene_list[[i]]$TPM) 
+
+# Add the values for Pearson corr, SULF2 ~ Fibrosis
+govaere_SULF2_correlation_pearson_fib[[i]] <- cor(x=govaere_gene_list[[i]]$TPM, y=govaere_gene_list[[i]]$Fibrosis_stage, method = "pearson")
+names(govaere_SULF2_correlation_pearson_fib[[i]]) <- GOI[i]
+# Add the values for Pearson corr, SULF2 ~ NAS
+govaere_SULF2_correlation_pearson_NAS[[i]] <- cor(x=govaere_gene_list[[i]]$TPM, y=govaere_gene_list[[i]]$nas_score, method = "pearson")
+names(govaere_SULF2_correlation_pearson_NAS[[i]]) <- GOI[i]
+}
+
+# Create a dataframe with correlation values for Pearson corr, SULF2 ~ Fibrosis
+govaere_SULF2_correlation_pearson_fib.df <- data.frame(corr_value = unlist(govaere_SULF2_correlation_pearson_fib)) %>% mutate(corr = "Fibrosis") %>% mutate(corr.test = "Pearson") %>% tibble::rownames_to_column("GeneSymbol")
+# Create a dataframe with correlation values for Pearson corr, SULF2 ~ NAS
+govaere_SULF2_correlation_pearson_NAS.df <- data.frame(corr_value = unlist(govaere_SULF2_correlation_pearson_NAS)) %>% mutate(corr = "NAS") %>% mutate(corr.test = "Pearson") %>% tibble::rownames_to_column("GeneSymbol")
+
+# rbind these dataframes together.
+all_correlations <- rbind(govaere_SULF2_correlation_pearson_fib.df, 
+                          govaere_SULF2_correlation_pearson_NAS.df) 
+```
+
+```{r}
+library(patchwork)
+
+# Generate a summary correlation for Pearson correlation in SULF2 ~ Fibrosis
+all_correlations_plot1 <- all_correlations %>% 
+  filter(corr == "Fibrosis") %>% 
+  filter(corr.test == "Pearson") %>% 
+  arrange(desc(corr_value)) 
+all_correlations_plot1_order <- all_correlations_plot1 %>% pull("GeneSymbol")
+
+p1 <- ggplot(all_correlations_plot1, aes(x=corr_value, y=factor(GeneSymbol, levels = rev(all_correlations_plot1_order)))) +
+    geom_point(shape=21, aes(size=corr_value)) +
+    scale_size_continuous(name="r", range=c(1,8), limits=c(0.25,0.62)) +
+    theme_bw() +
+    scale_x_continuous(limits=c(0.28, 0.62), breaks=seq(0.3,0.6,0.1)) +
+    xlab("Pearson correlation (r)") +
+    ylab("")
+
+# Generate a summary correlation plot for Pearson correlation in SULF2 ~ NAS. Suppl. Figure 2A-B
+all_correlations_plot2 <- all_correlations %>%  filter(corr == "NAS") %>% 
+  filter(corr.test == "Pearson") %>% 
+  arrange(desc(corr_value)) 
+all_correlations_plot2_order <- all_correlations_plot2 %>% pull("GeneSymbol") 
+
+p2 <- ggplot(all_correlations_plot2, aes(x=corr_value, y=factor(GeneSymbol, levels = rev(all_correlations_plot2_order)))) +
+    geom_point(shape=21, aes(size=corr_value)) +
+   scale_size_continuous(name="r", range=c(1,8), limits=c(0.25,0.62)) +
+    theme_bw() +
+    scale_x_continuous(limits=c(0.28, 0.62), breaks=seq(0.3,0.6,0.1)) +
+    xlab("Pearson correlation (r)") +
+    ylab("")
+
+# Generate a summary correlation plot with the average between NAS and Fibrosis, for pearson corr. (Figure 2B)
+pearson_correlations_avg_plot3 <- govaere_SULF2_correlation_pearson_fib.df %>%   mutate(avg_r_corr = (govaere_SULF2_correlation_pearson_fib.df$corr_value + govaere_SULF2_correlation_pearson_NAS.df$corr_value)/2) %>% 
+  arrange(desc(avg_r_corr)) 
+pearson_correlations_avg_plot3_order <- pearson_correlations_avg_plot3 %>% pull("GeneSymbol")
+
+
+p3 <- ggplot(pearson_correlations_avg_plot3, aes(x=avg_r_corr, y=factor(GeneSymbol, levels = rev(pearson_correlations_avg_plot3_order)))) +
+    geom_point(shape=21, aes(size=avg_r_corr)) +
+    scale_size_continuous(name="r", range=c(1,8), limits=c(0.25,0.62)) +
+    theme_bw() +
+    scale_x_continuous(limits=c(0.28, 0.62), breaks=seq(0.3,0.6,0.1)) +
+    xlab("Pearson correlation (r)") +
+    ylab("") 
+
+
+# Using patchwork, respective plots together in a pdf.
+p1+p2+p3
+ggsave("results/mRNA_correlation_plots/Pearson_correlation_summary.pdf", width = 25, height =10, units="cm")
+```
+# Significances for boxplot in Suppl. Fig 2CD
+```{r}
+SULF2_TPM <- govaere$tpm_counts %>% filter(symbol == "SULF2") %>% t() %>% as.data.frame() %>% tibble::rownames_to_column("Run")
+SULF2_TPM <- SULF2_TPM[2:nrow(SULF2_TPM),]
+SULF2_TPM2 <- inner_join(SULF2_TPM, govaere$meta, by="Run") 
+SULF2_TPM2$V1 <- as.numeric(SULF2_TPM2$V1)
+SULF2_TPM2$Fibrosis_stage <- as.factor(SULF2_TPM2$Fibrosis_stage)
+SULF2_TPM2$nas_score <- as.factor(SULF2_TPM2$nas_score)
+
+fibrosis_aov <- aov(SULF2_TPM2$V1 ~ SULF2_TPM2$Fibrosis_stage)
+TukeyHSD(fibrosis_aov)
+
+nas_score_aov <- aov(SULF2_TPM2$V1 ~ SULF2_TPM2$nas_score)
+TukeyHSD(nas_score_aov)
+```
+```{r}
+sessionInfo()
+```
+ 
+ 
